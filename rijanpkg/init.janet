@@ -30,7 +30,6 @@
   (config :xkb-bindings)
   # --- Waybar Toggle (最优解：信号隐藏 || 失败救活)
   [:b {:mod4 true :shift true} (action/spawn ["sh" "-c" (string "pkill -USR1 waybar || " waybar-cmd " &")])]
-  [:r {:mod4 true :shift true} (action/spawn (fn [& _] (reload-config)))]
   [:XF86MonBrightnessUp {} (action/spawn ["brightnessctl" "set" "10%+"])]
   [:XF86MonBrightnessDown {} (action/spawn ["brightnessctl" "set" "10%-"])]
   [:XF86AudioRaiseVolume {} (action/spawn ["wpctl" "set-volume" "@DEFAULT_AUDIO_SINK@" "5%+" "-l" "1"])]
@@ -73,22 +72,24 @@
 # ============================================================
 # 4. 幂等性自启动序列 (防止重复进程)
 # ============================================================
-
-# A. 输入法 (fcitx5)
-(os/spawn ["sh" "-c" "pgrep -x fcitx5 > /dev/null || fcitx5 -d"] :p)
-
-# B. 通知守护 (Dunst): 显式指定路径启动
-(os/spawn ["sh" "-c" (string "pgrep -x dunst > /dev/null || dunst -config " (paths :dunst-conf) " &")] :p)
-
-# C. 壁纸 (swww): 利用 Systemd 守护 + 初始着色
-# 逻辑：启动服务 -> 等待 daemon 握手 -> 刷入图片
-(os/spawn ["sh" "-c" (string 
-  "systemctl --user start swww.service && "
-  "sleep 0.5 && "
-  "swww img " (paths :wallpaper))] :p)
-
-# D. 状态栏 (Waybar): 初始启动
-(os/spawn ["sh" "-c" (string "pgrep -x waybar > /dev/null || " waybar-cmd " &")] :p)
+# 将所有环境同步和启动逻辑打包进一个后台 Shell 进程
+# 这样做 Janet 瞬间就执行完了，不会产生 Broken Pipe
+(os/spawn ["sh" "-c" (string
+  # 1. 第一步：同步环境（这是所有图形程序的基石）
+  "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP DISPLAY; "
+  
+  # 2. 第二步：启动不依赖环境的程序（并行）
+  "pgrep -x fcitx5 > /dev/null || fcitx5 -d & "
+  
+  # 3. 第三步：启动依赖环境的程序（串行链条，确保变量已生效）
+  # 使用 && 确保前一步成功才执行下一步
+  "systemctl --user restart swww.service && "
+  "swww img " (paths :wallpaper) " & "
+  
+  # 4. 状态栏和通知
+  "pgrep -x waybar > /dev/null || " waybar-cmd " & "
+  "pgrep -x dunst > /dev/null || dunst -config " (paths :dunst-conf) " & "
+)] :p)
 
 # [初始化完成通知]
 (notify "所有服务已就绪" "Rijan 启动完成")
