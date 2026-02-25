@@ -21,7 +21,7 @@
   (os/spawn ["notify-send" "-a" "Rijan" "-u" level title msg] :p))
 
 # [Waybar 启动指令定义]
-(def waybar-cmd (string "waybar -c " (paths :waybar-conf) " -s " (paths :waybar-css)))
+(def waybar-cmd (string "waybar -c '" (paths :waybar-conf) "' -s '" (paths :waybar-css) "'"))
 
 # ============================================================
 # 3. 按键绑定 (声明式逻辑)
@@ -68,8 +68,8 @@
 
 (array/push
   (config :pointer-bindings)
-  [:left {:mod4 :true} (action/pointer-move)]
-  [:right {:mod4 :true} (action/pointer-resize)])
+  [:left {:mod4 true} (action/pointer-move)]
+  [:right {:mod4 true} (action/pointer-resize)])
 # ============================================================
 # 4. 幂等性自启动序列 (防止重复进程)
 # ============================================================
