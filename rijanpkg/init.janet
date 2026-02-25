@@ -53,6 +53,7 @@
   [:j {:mod4 true} (action/focus-output)]
   [:f {:mod4 true} (action/fullscreen)]
   [:f {:mod4 true :mod1 true} (action/float)]
+  [:r {:mod4 true :shift true} (action/retile)]
   [:a {:mod4 true} (action/spawn ["sh" "-c" "grim -g \"$(slurp)\" - | wl-copy"])]
   [:Escape {:mod4 true :mod1 true :shift true :ctrl true} (action/passthrough)]
   [:0 {:mod4 true} (action/focus-all-tags)])
