@@ -35,14 +35,8 @@
               :outer-padding 4
               :inner-padding 4
               :main-ratio 0.60
-# 这里的列表仅作为默认值，用户可以在配置中通过 (merge-into config {:csd-list [...]}) 覆盖
-              :csd-list ["wechat" "wemeetapp" "google-chrome"]
-              :floating-list ["moments" "notification" "picture-in-picture"] # 增加浮动关键字白名单
-              :default-float-ratio 0.5 # 如果没尺寸，默认占屏幕 50%
               :xkb-bindings @[]
-              :pointer-bindings @[]
-              :window-rules @[]})
-
+              :pointer-bindings @[]})
 (merge-into config light)
 
 (def wm @{:config config
@@ -53,32 +47,6 @@
           # The last window in the array is rendered on top.
           :render-order @[]})
 
-(defn- window/analyze-intent [window]
-  (if-not (nil? (window :float)) (break (window :float)))
-  (let [app-id (string/ascii-lower (or (window :app-id) ""))
-        title (string/ascii-lower (or (window :title) "")) # 获取窗口标题
-        parent (window :parent)
-        is-fixed (and (window :min-w) (> (window :min-w) 0)
-                      (= (window :min-w) (window :max-w))
-                      (= (window :min-h) (window :max-h)))
-        # 从配置中读取浮动关键字白名单
-        float-list (get (wm :config) :floating-list [])
-        matches-keyword (some |(or (string/find $ app-id) (string/find $ title)) float-list)]
-
-    (or (not (nil? parent)) is-fixed matches-keyword)))
-
-(defn- window/can-self-draw? [window]
-  (cond
-    # 1. 协议显式提示
-    (= (window :decoration-hint) :client-side) true
-    # 2. 从动态配置中检查白名单 (不再写死)
-    (let [app-id (string/ascii-lower (or (window :app-id) ""))
-          csd-list (get (wm :config) :csd-list [])]
-      (if (some |(string/find $ app-id) csd-list) (break true)))
-    # 3. 经验逻辑：有父窗口且有初始尺寸
-    (and (window :parent) (window :w)) true
-    false))
-
 (def registry @{})
 
 (defn rgb-to-u32-rgba [rgb]
@@ -86,38 +54,6 @@
    (* (band 0xff (brushift rgb 8)) (/ 0xffff_ffff 0xff))
    (* (band 0xff rgb) (/ 0xffff_ffff 0xff))
    0xffff_ffff])
-
-(defn get-center-box [outer-w outer-h inner-w inner-h x-offset y-offset]
-  [(+ x-offset (math/floor (/ (- outer-w inner-w) 2)))
-   (+ y-offset (math/floor (/ (- outer-h inner-h) 2)))])
-
-#(defn bg/manage [bg output]
-#  (:sync-next-commit (bg :shell-surface))
-#  (:place-bottom (bg :node))
-#  (:set-position (bg :node) (output :x) (output :y))
-#  (def buffer (:create-u32-rgba-buffer
-#                (registry "wp_single_pixel_buffer_manager_v1")
-#                ;(rgb-to-u32-rgba ((wm :config) :background))))
-#  (:attach (bg :surface) buffer 0 0)
-#  (:damage-buffer (bg :surface) 0 0 0x7fff_ffff 0x7fff_ffff)
-#  (:set-destination (bg :viewport) (output :w) (output :h))
-#  (:commit (bg :surface))
-#  (:destroy buffer))
-#
-#(defn bg/destroy [bg]
-#  (:destroy (bg :viewport))
-#  (:destroy (bg :shell-surface))
-#  (:destroy (bg :surface))
-#  (:destroy (bg :node)))
-#
-#(defn bg/create []
-#  (def surface (:create-surface (registry "wl_compositor")))
-#  (def viewport (:get-viewport (registry "wp_viewporter") surface))
-#  (def shell-surface (:get-shell-surface (registry "river_window_manager_v1") surface))
-#  @{:surface surface
-#    :viewport viewport
-#    :shell-surface shell-surface
-#    :node (:get-node shell-surface)})
 
 (defn output/visible [output windows]
   (let [tags (output :tags)]
@@ -130,13 +66,10 @@
 
 (defn output/manage-start [output]
   (if (output :removed)
-    (do
-      (:destroy (output :obj)))
-#      (bg/destroy (output :bg)))
+    (:destroy (output :obj))
     output))
 
 (defn output/manage [output]
-#  (bg/manage (output :bg) output)
   (when (output :new)
     (let [unused (find (fn [tag] (not (find |(($ :tags) tag) (wm :outputs)))) (range 1 10))]
       (put (output :tags) unused true))))
@@ -146,7 +79,6 @@
 
 (defn output/create [obj]
   (def output @{:obj obj
-#                :bg (bg/create)
                 :layer-shell (:get-output (registry "river_layer_shell_v1") obj)
                 :new true
                 :tags @{}})
@@ -163,24 +95,28 @@
   (:set-handler (output :layer-shell) output/handle-layer-shell-event)
   output)
 
-(defn window/set-position [window x y]
-  (let [bw (if (window :is-csd) 0 ((wm :config) :border-width))
-        nx (+ x bw)
-        ny (+ y bw)]
-    (put window :x nx)
-    (put window :y ny)
-    (:set-position (window :node) nx ny)))
+(defn window/set-position
+  "Set position, adjusting for border width"
+  [window x y]
+  (let [border-width ((wm :config) :border-width)
+        x (+ x border-width)
+        y (+ y border-width)]
+    (put window :x x)
+    (put window :y y)
+    (:set-position (window :node) x y)))
 
-(defn window/propose-dimensions [window w h]
-  (let [bw (if (window :is-csd) 0 ((wm :config) :border-width))]
-    (:propose-dimensions (window :obj)
-                         (max 1 (- w (* 2 bw)))
-                         (max 1 (- h (* 2 bw))))))
+(defn window/propose-dimensions
+  "Propose dimensions, adjusting for border width"
+  [window w h]
+  (def border-width ((wm :config) :border-width))
+  (:propose-dimensions (window :obj)
+                       (max 1 (- w (* 2 border-width)))
+                       (max 1 (- h (* 2 border-width)))))
 
 (defn window/set-float [window float]
   (if float
     (:set-tiled (window :obj) {})
-    (:set-tiled (window :obj) {:left true :bottom :true :top :true :right true}))
+    (:set-tiled (window :obj) {:left true :bottom true :top true :right true}))
   (put window :float float))
 
 (defn window/set-fullscreen [window fullscreen-output]
@@ -219,69 +155,6 @@
     (unless (= output (window/tag-output window))
       (put window :tag (or (min-of (keys (output :tags))) 1)))))
 
-(defn window/manage-start [window]
-  (if (window :closed)
-    (:destroy (window :obj))
-    window))
-
-(defn window/manage [window]
-  (let [f (window/analyze-intent window)
-        csd (window/can-self-draw? window)]
-    (put window :is-csd csd)
-    (window/set-float window f)
-    
-    (unless csd (:use-ssd (window :obj)))
-
-    (if f
-      (do
-        (if-let [p (window :parent)] (put window :tag (p :tag)))
-        # 改进的坐标和尺寸逻辑
-        (when (and (window :new) (not (window :x)))
-          (when-let [seat (first (wm :seats))
-                     out (seat :focused-output)]
-            (let [cfg (wm :config)
-                  # 核心改进：优先取窗口原有 w/h，否则按比例计算兜底值
-                  req-w (or (window :w) (math/floor (* (out :w) (get cfg :default-float-ratio 0.5))))
-                  req-h (or (window :h) (math/floor (* (out :h) (get cfg :default-float-ratio 0.5))))
-                  [cx cy] (get-center-box (out :w) (out :h) req-w req-h (out :x) (out :y))]
-              (window/set-position window cx cy))))
-
-        # 关键：告诉客户端，我（合成器）没有强制尺寸，你自己看着办
-        (:propose-dimensions (window :obj) 0 0))
-      (when (window :new)
-        (when-let [seat (first (wm :seats))
-                   output (seat :focused-output)]
-          (put window :tag (or (min-of (keys (output :tags))) 1)))))))
-
-(defn window/manage-finish [window]
-  (put window :new nil)
-  (put window :pointer-move-requested nil)
-  (put window :pointer-resize-requested nil)
-  (put window :fullscreen-requested nil))
-
-(defn- set-borders [window status config]
-  (def rgb (case status
-             :normal (config :border-normal)
-             :focused (config :border-focused)))
-  (:set-borders (window :obj)
-                {:left true :bottom :true :top :true :right true}
-                (config :border-width)
-                ;(rgb-to-u32-rgba rgb)))
-
-(defn window/render [window]
-  # 只有在非 CSD 模式下，Rijan 才绘制边框
-  (unless (window :is-csd)
-    (if (find |(= ($ :focused) window) (wm :seats))
-      (set-borders window :focused (wm :config))
-      (set-borders window :normal (wm :config))))
-
-  (unless (window :float)
-    (when (and (not (window :x)) (window :w))
-      (if-let [output (window/max-overlap-output (window :parent))]
-        (let [[cx cy] (get-center-box (output :w) (output :h) (window :w) (window :h) (output :x) (output :y))]
-           (window/set-position window cx cy))
-        (window/set-position window 0 0)))))
-
 (defn window/create [obj]
   (def window @{:obj obj
                 :node (:get-node obj)
@@ -296,10 +169,10 @@
                                                    (put window :max-w max-w)
                                                    (put window :max-h max-h))
       [:dimensions w h] (do (put window :w w) (put window :h h))
-      [:app-id app-id] (do (put window :app-id app-id) (put window :float nil) (window/manage window))
-      [:decoration-hint hint] (do (put window :decoration-hint hint) (window/manage window))
+      [:app-id app-id] (put window :app-id app-id)
       [:title title] (put window :title title)
       [:parent parent] (put window :parent (if parent (:get-user-data parent)))
+      [:decoration-hint hint] (put window :decoration-hint hint)
       [:pointer-move-requested seat] (put window :pointer-move-requested
                                           {:seat (:get-user-data seat)})
       [:pointer-resize-requested seat edges] (put window :pointer-resize-requested
@@ -340,38 +213,53 @@
     (put seat :focused-output output)
     (when output (:set-default (output :layer-shell)))))
 
+(defn- seat/resolve-focus-target
+  "Determine which window should be focused, or :clear to clear focus, or :keep to keep current.
+   Returns the target window, :clear, or :keep."
+  [seat window]
+  (when-let [output (seat :focused-output)]
+    (defn visible? [w] (and w ((output :tags) (w :tag))))
+    (def visible (output/visible output (wm :render-order)))
+    (cond
+      # The top fullscreen window always grabs focus when present.
+      (def fullscreen (last (filter |($ :fullscreen) visible)))
+      fullscreen
+      # If there is a visible explicit target window, focus it.
+      (visible? window) window
+      # Otherwise, don't change focus if the current focus is visible.
+      (visible? (seat :focused)) :keep
+      # When no visible window is focused, focus the top one, if any.
+      (def top-visible (last visible)) top-visible
+      # When no windows are visible, clear focus.
+      :clear)))
+
+(defn- seat/apply-focus
+  "Apply focus to a window, updating render order and compositor state."
+  [seat window]
+  (unless (= (seat :focused) window)
+    (:focus-window (seat :obj) (window :obj))
+    (put seat :focused window)
+    (if-let [i (find-index |(= $ window) (wm :render-order))]
+      (array/remove (wm :render-order) i))
+    (array/push (wm :render-order) window)
+    (:place-top (window :node))))
+
+(defn- seat/clear-focus [seat]
+  (when (seat :focused)
+    (:clear-focus (seat :obj))
+    (put seat :focused nil)))
+
 (defn seat/focus [seat window]
-  (defn focus-window [window]
-    (unless (= (seat :focused) window)
-      (:focus-window (seat :obj) (window :obj))
-      (put seat :focused window)
-      (if-let [i (find-index |(= $ window) (wm :render-order))]
-        (array/remove (wm :render-order) i))
-      (array/push (wm :render-order) window)
-      (:place-top (window :node))))
-  (defn clear-focus []
-    (when (seat :focused)
-      (:clear-focus (seat :obj))
-      (put seat :focused nil)))
   (defn focus-non-layer []
     (when window
       (when-let [output (window/tag-output window)]
         (seat/focus-output seat output)))
-    (when-let [output (seat :focused-output)]
-      (defn visible? [w] (and w ((output :tags) (w :tag))))
-      (def visible (output/visible output (wm :render-order)))
-      (cond
-        # The top fullscreen window always grabs focus when present.
-        (def fullscreen (last (filter |($ :fullscreen) visible)))
-        (focus-window fullscreen)
-        # If there is a visible explict target window, focus it.
-        (visible? window) (focus-window window)
-        # Otherwise, don't change focus if the current focus is visible.
-        (visible? (seat :focused)) (do)
-        # When no visible window is focused, focus the top one, if any.
-        (def top-visible (last visible)) (focus-window top-visible)
-        # When no windows are visible, clear focus.
-        (clear-focus))))
+    (def target (seat/resolve-focus-target seat window))
+    (case target
+      nil    (do)
+      :keep  (do)
+      :clear (seat/clear-focus seat)
+      (seat/apply-focus seat target)))
   (case (seat :layer-focus)
     :exclusive (put seat :focused nil)
     :non-exclusive (if window
@@ -403,17 +291,78 @@
                     :start-w (window :w) :start-h (window :h)
                     :dx 0 :dy 0})))
 
+(defn window/manage-start [window]
+  (if (window :closed)
+    (:destroy (window :obj))
+    window))
+
+(defn window/manage [window]
+  (when (window :new)
+    (:use-ssd (window :obj))
+    (if-let [parent (window :parent)]
+      (do
+        (window/set-float window true)
+        (put window :tag (parent :tag))
+        (:propose-dimensions (window :obj) 0 0))
+      (do
+        (window/set-float window false)
+        (when-let [seat (first (wm :seats))
+                   output (seat :focused-output)]
+          (put window :tag (or (min-of (keys (output :tags))) 1))))))
+  (match (window :fullscreen-requested)
+    [:enter] (if-let [seat (first (wm :seats))
+                      output (seat :focused-output)]
+               (window/set-fullscreen window output))
+    [:enter output] (window/set-fullscreen window output)
+    [:exit] (window/set-fullscreen window nil))
+  (when-let [move (window :pointer-move-requested)]
+    (seat/pointer-move (move :seat) window))
+  (when-let [resize (window :pointer-resize-requested)]
+    (seat/pointer-resize (resize :seat) window (resize :edges))))
+
+(defn window/manage-finish [window]
+  (put window :new nil)
+  (put window :pointer-move-requested nil)
+  (put window :pointer-resize-requested nil)
+  (put window :fullscreen-requested nil))
+
+(defn- set-borders [window status config]
+  (def rgb (case status
+             :normal (config :border-normal)
+             :focused (config :border-focused)))
+  (:set-borders (window :obj)
+                {:left true :bottom true :top true :right true}
+                (config :border-width)
+                ;(rgb-to-u32-rgba rgb)))
+
+(defn window/render [window]
+  (when (and (not (window :x)) (window :w))
+    # Windows that start with a parent have nil x/y until rijan receives
+    # a dimensions event and a render sequence is completed.
+    (if-let [output (window/max-overlap-output (window :parent))]
+      (window/set-position window
+                           (+ (output :x) (div (- (output :w) (window :w)) 2))
+                           (+ (output :y) (div (- (output :h) (window :h)) 2)))
+      (window/set-position window 0 0)))
+  (if (find |(= ($ :focused) window) (wm :seats))
+    (set-borders window :focused (wm :config))
+    (set-borders window :normal (wm :config))))
+
 (defn seat/manage-start [seat]
   (if (seat :removed)
     (:destroy (seat :obj))
     seat))
 
-(defn seat/manage [seat]
+(defn- seat/init-bindings [seat]
+  "Initialize key and pointer bindings for a new seat."
   (when (seat :new)
     (each binding (config :xkb-bindings)
       (xkb-binding/create seat ;binding))
     (each binding (config :pointer-bindings)
-      (pointer-binding/create seat ;binding)))
+      (pointer-binding/create seat ;binding))))
+
+(defn- seat/cleanup-stale-refs [seat]
+  "Clear references to closed windows and removed outputs."
   (when-let [window (seat :focused)]
     (when (window :closed)
       (put seat :focused nil)))
@@ -422,33 +371,44 @@
       (put seat :op nil)))
   (if (or (not (seat :focused-output))
           ((seat :focused-output) :removed))
-    (seat/focus-output seat (first (wm :outputs))))
+    (seat/focus-output seat (first (wm :outputs)))))
 
+(defn- seat/resolve-focus [seat]
+  "Determine and apply focus: existing windows, new windows, interactions."
   (seat/focus seat nil)
   (each window (wm :windows)
     (when (window :new)
       (seat/focus seat window)))
   (if-let [window (seat :window-interaction)]
-    (seat/focus seat window))
+    (seat/focus seat window)))
 
+(defn- seat/execute-action [seat]
+  "Execute the pending keybinding/pointer action, then re-sync focus."
   (when-let [[binding action] (seat :pending-action)]
     (action seat binding))
-
   # Ensure focus is consistent after action (e.g. may have switched tags)
-  (seat/focus seat nil)
+  (seat/focus seat nil))
 
+(defn- seat/update-op [seat]
+  "Handle ongoing pointer operations (resize) and op-release finalization."
   (when-let [op (seat :op)]
     (when (= :resize (op :type))
-      # Resize from bottom right corner
       (window/propose-dimensions (op :window)
                                  (max 1 (+ (op :start-w) (op :dx)))
                                  (max 1 (+ (op :start-h) (op :dy))))))
   (when (and (seat :op-release) (seat :op))
     (:op-end (seat :obj))
-    (window/update-tag ((seat :op) :window))
-    # TODO why do I need this focus-output call here??
-    (seat/focus-output seat (window/tag-output ((seat :op) :window)))
+    (def op-window ((seat :op) :window))
+    (window/update-tag op-window)
+    (seat/focus-output seat (window/tag-output op-window))
     (put seat :op nil)))
+
+(defn seat/manage [seat]
+  (seat/init-bindings seat)
+  (seat/cleanup-stale-refs seat)
+  (seat/resolve-focus seat)
+  (seat/execute-action seat)
+  (seat/update-op seat))
 
 (defn seat/manage-finish [seat]
   (put seat :new nil)
@@ -507,14 +467,15 @@
 
 (defn wm/layout [output]
   (def windows (filter |(not ($ :float)) (output/visible output (wm :windows))))
+  (when (empty? windows) (break))
   (def side-count (- (length windows) 1))
   (def usable (output/usable-area output))
   (def total-w (max 0 (- (usable :w) (* 2 ((wm :config) :outer-padding)))))
   (def total-h (max 0 (- (usable :h) (* 2 ((wm :config) :outer-padding)))))
   (def main-w (if (= 0 side-count) total-w (math/round (* total-w ((wm :config) :main-ratio)))))
   (def side-w (- total-w main-w))
-  (def side-h (div total-h side-count))
-  (def side-h-rem (% total-h side-count))
+  (def side-h (if (= 0 side-count) 0 (div total-h side-count)))
+  (def side-h-rem (if (= 0 side-count) 0 (% total-h side-count)))
   (->> (range (length windows))
        (map (fn [i]
               (case i
@@ -541,22 +502,22 @@
   (update wm :windows |(keep window/manage-start $))
   (update wm :seats |(keep seat/manage-start $))
 
-  (map output/manage (wm :outputs))
-  (map window/manage (wm :windows))
-  (map seat/manage (wm :seats))
+  (each output (wm :outputs) (output/manage output))
+  (each window (wm :windows) (window/manage window))
+  (each seat (wm :seats) (seat/manage seat))
 
-  (map wm/layout (wm :outputs))
+  (each output (wm :outputs) (wm/layout output))
   (wm/show-hide)
 
-  (map output/manage-finish (wm :outputs))
-  (map window/manage-finish (wm :windows))
-  (map seat/manage-finish (wm :seats))
+  (each output (wm :outputs) (output/manage-finish output))
+  (each window (wm :windows) (window/manage-finish window))
+  (each seat (wm :seats) (seat/manage-finish seat))
 
   (:manage-finish (registry "river_window_manager_v1")))
 
 (defn wm/render []
-  (map window/render (wm :windows))
-  (map seat/render (wm :seats))
+  (each window (wm :windows) (window/render window))
+  (each seat (wm :seats) (seat/render seat))
   (:render-finish (registry "river_window_manager_v1")))
 
 (defn wm/handle-event [event]
@@ -651,7 +612,7 @@
 (defn action/focus-tag [tag]
   (fn [seat binding]
     (when-let [output (seat :focused-output)]
-      (map |(put ($ :tags) tag nil) (wm :outputs))
+      (each o (wm :outputs) (put (o :tags) tag nil))
       (put output :tags @{tag true})
       (fallback-tags (wm :outputs)))))
 
@@ -661,14 +622,14 @@
       (if ((output :tags) tag)
         (put (output :tags) tag nil)
         (do
-          (map |(put ($ :tags) tag nil) (wm :outputs))
+          (each o (wm :outputs) (put (o :tags) tag nil))
           (put (output :tags) tag true)))
       (fallback-tags (wm :outputs)))))
 
 (defn action/focus-all-tags []
   (fn [seat binding]
     (when-let [output (seat :focused-output)]
-      (map |(put $ :tags @{}) (wm :outputs))
+      (each o (wm :outputs) (put o :tags @{}))
       (put output :tags (table ;(mapcat |[$ true] (range 1 10)))))))
 
 (defn action/pointer-move []
