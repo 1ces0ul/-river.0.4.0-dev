@@ -262,11 +262,18 @@
       (seat/apply-focus seat target)))
   (case (seat :layer-focus)
     :exclusive (put seat :focused nil)
-    :non-exclusive (if window
-                     (do
-                       (put seat :layer-focus :none)
-                       (focus-non-layer))
-                     (put seat :focused nil))
+    :non-exclusive (do
+                     # When an explicit window target is given, break out of
+                     # non-exclusive layer focus to focus that window.
+                     # When window is nil, still run focus-non-layer so the
+                     # normal focus resolution can clear-focus or pick a
+                     # visible window — otherwise we get stuck in a state
+                     # where focused is nil but layer-focus stays :non-exclusive
+                     # and keybinding actions that depend on seat :focused
+                     # silently fail.
+                     (when window
+                       (put seat :layer-focus :none))
+                     (focus-non-layer))
     :none (focus-non-layer)))
 
 (defn seat/pointer-move [seat window]
@@ -296,22 +303,73 @@
     (:destroy (window :obj))
     window))
 
+(defn window/is-fixed-size [window]
+  "Check if window has a constrained size that makes tiling inappropriate.
+   True when either dimension is fixed (min == max) and non-zero."
+  (and (window :min-w) (window :min-h)
+       (window :max-w) (window :max-h)
+       (> (window :min-w) 0) (> (window :min-h) 0)
+       (> (window :max-w) 0) (> (window :max-h) 0)
+       (or (= (window :min-w) (window :max-w))
+           (= (window :min-h) (window :max-h)))))
+
+(defn window/is-popup-like [window]
+  "Check if window looks like a popup/utility window that should have no
+   decorations. True when both dimensions are completely fixed (min == max)."
+  (and (window :min-w) (window :min-h)
+       (window :max-w) (window :max-h)
+       (> (window :min-w) 0) (> (window :min-h) 0)
+       (= (window :min-w) (window :max-w))
+       (= (window :min-h) (window :max-h))))
+
 (defn window/manage [window]
   (when (window :new)
-    (:use-ssd (window :obj))
     (if-let [parent (window :parent)]
       (do
+        # Child/transient windows with a real parent:
+        # float them, inherit parent tag, no server-side decorations.
+        (put window :managed-as-child true)
         (window/set-float window true)
         (put window :tag (parent :tag))
-        (:propose-dimensions (window :obj) 0 0))
+        (if (and (window :w) (> (window :w) 0)
+                 (window :h) (> (window :h) 0))
+          (:propose-dimensions (window :obj) (window :w) (window :h))
+          (if (window/is-popup-like window)
+            (:propose-dimensions (window :obj) (window :min-w) (window :min-h))
+            (:propose-dimensions (window :obj) 0 0))))
       (do
-        (window/set-float window false)
+        # No parent. Check if this looks like a popup/utility window
+        # (fully fixed size, e.g. WeChat emoji panel, avatar popup, menus).
+        # XWayland often sets WM_TRANSIENT_FOR to the client leader window
+        # which has no corresponding wayland surface, so river delivers
+        # [:parent nil] and window :parent stays nil. We must detect these
+        # windows by their size constraints instead.
+        (if (window/is-popup-like window)
+          (do
+            (put window :managed-as-child true)
+            (window/set-float window true)
+            (if (and (window :w) (> (window :w) 0)
+                     (window :h) (> (window :h) 0))
+              (:propose-dimensions (window :obj) (window :w) (window :h))
+              (:propose-dimensions (window :obj) (window :min-w) (window :min-h))))
+          (do
+            (:use-ssd (window :obj))
+            (if (window/is-fixed-size window)
+              (window/set-float window true)
+              (window/set-float window false))))
         (when-let [seat (first (wm :seats))
                    output (seat :focused-output)]
           (put window :tag (or (min-of (keys (output :tags))) 1))))))
+  # Late-arriving parent: convert to child if parent appears after first cycle.
+  (when (and (not (window :new))
+             (window :parent)
+             (not (window :managed-as-child)))
+    (put window :managed-as-child true)
+    (window/set-float window true)
+    (put window :tag ((window :parent) :tag)))
   (match (window :fullscreen-requested)
     [:enter] (if-let [seat (first (wm :seats))
-                      output (seat :focused-output)]
+                       output (seat :focused-output)]
                (window/set-fullscreen window output))
     [:enter output] (window/set-fullscreen window output)
     [:exit] (window/set-fullscreen window nil))
@@ -326,6 +384,26 @@
   (put window :pointer-resize-requested nil)
   (put window :fullscreen-requested nil))
 
+(defn- window/find-logical-parent [window]
+  "For popup-like windows whose WM_TRANSIENT_FOR points to a client leader
+   (so window :parent is nil), find the most likely logical parent by
+   matching app-id among existing visible non-child windows."
+  (when-let [app-id (window :app-id)]
+    (find |(and (not ($ :managed-as-child))
+               (not ($ :closed))
+               (= ($ :app-id) app-id)
+               ($ :x) ($ :w))
+          (wm :windows))))
+
+(defn- window/center-on-output [window]
+  "Center window on the focused output, or fall back to 0,0."
+  (if-let [seat (first (wm :seats))
+           output (seat :focused-output)]
+    (window/set-position window
+                         (+ (output :x) (div (- (output :w) (window :w)) 2))
+                         (+ (output :y) (div (- (output :h) (window :h)) 2)))
+    (window/set-position window 0 0)))
+
 (defn- set-borders [window status config]
   (def rgb (case status
              :normal (config :border-normal)
@@ -337,16 +415,44 @@
 
 (defn window/render [window]
   (when (and (not (window :x)) (window :w))
-    # Windows that start with a parent have nil x/y until rijan receives
-    # a dimensions event and a render sequence is completed.
-    (if-let [output (window/max-overlap-output (window :parent))]
-      (window/set-position window
-                           (+ (output :x) (div (- (output :w) (window :w)) 2))
-                           (+ (output :y) (div (- (output :h) (window :h)) 2)))
-      (window/set-position window 0 0)))
-  (if (find |(= ($ :focused) window) (wm :seats))
-    (set-borders window :focused (wm :config))
-    (set-borders window :normal (wm :config))))
+    (if-let [parent (window :parent)]
+      # Has a real parent — center over parent, or fall back to output center.
+      (if (and (parent :x) (parent :y) (parent :w) (parent :h))
+        (window/set-position window
+                             (+ (parent :x) (div (- (parent :w) (window :w)) 2))
+                             (+ (parent :y) (div (- (parent :h) (window :h)) 2)))
+        (window/center-on-output window))
+      # No parent.
+      (if (window :managed-as-child)
+        # Popup-like window (no real parent due to XWayland client leader).
+        # Try to find a logical parent by app-id and center over it.
+        (if-let [logical-parent (window/find-logical-parent window)]
+          (window/set-position window
+                               (+ (logical-parent :x)
+                                  (div (- (logical-parent :w) (window :w)) 2))
+                               (+ (logical-parent :y)
+                                  (div (- (logical-parent :h) (window :h)) 2)))
+          (window/center-on-output window))
+        # Floating top-level (e.g. Moments) — center on output.
+        (if (window :float)
+          (window/center-on-output window)
+          # Tiled windows get positioned by wm/layout, not here.
+          (window/set-position window 0 0)))))
+  # Ensure child windows are always rendered above their parent.
+  (when-let [parent (window :parent)]
+    (unless (parent :closed)
+      (def parent-idx (find-index |(= $ parent) (wm :render-order)))
+      (def window-idx (find-index |(= $ window) (wm :render-order)))
+      (when (and parent-idx window-idx (< window-idx parent-idx))
+        # Child is below parent in render order — move it above.
+        (array/remove (wm :render-order) window-idx)
+        (array/push (wm :render-order) window)
+        (:place-top (window :node)))))
+  # Child/transient windows get no borders.
+  (unless (window :managed-as-child)
+    (if (find |(= ($ :focused) window) (wm :seats))
+      (set-borders window :focused (wm :config))
+      (set-borders window :normal (wm :config)))))
 
 (defn seat/manage-start [seat]
   (if (seat :removed)
@@ -362,9 +468,15 @@
       (pointer-binding/create seat ;binding))))
 
 (defn- seat/cleanup-stale-refs [seat]
-  "Clear references to closed windows and removed outputs."
+  "Clear references to closed windows and removed outputs.
+   When a child window closes, schedule focus return to its parent."
   (when-let [window (seat :focused)]
     (when (window :closed)
+      # If the closed window has a parent that is still alive,
+      # remember it so we can return focus to it.
+      (if-let [parent (window :parent)]
+        (unless (parent :closed)
+          (put seat :focus-return-to parent)))
       (put seat :focused nil)))
   (when-let [op (seat :op)]
     (when ((op :window) :closed)
@@ -374,10 +486,21 @@
     (seat/focus-output seat (first (wm :outputs)))))
 
 (defn- seat/resolve-focus [seat]
-  "Determine and apply focus: existing windows, new windows, interactions."
-  (seat/focus seat nil)
+  "Determine and apply focus: existing windows, new windows, interactions.
+   Prioritizes: focus-return-to (parent of closed child) > new windows > interaction."
+  # If a child window just closed, try to return focus to its parent first.
+  # But only if the parent is still alive — it may have been destroyed in
+  # the same manage cycle (e.g. WeChat login flash: parent and child both close).
+  (if-let [return-target (seat :focus-return-to)]
+    (do
+      (put seat :focus-return-to nil)
+      (if (return-target :closed)
+        (seat/focus seat nil)
+        (seat/focus seat return-target)))
+    (seat/focus seat nil))
   (each window (wm :windows)
-    (when (window :new)
+    (when (and (window :new)
+               (not (window :managed-as-child)))
       (seat/focus seat window)))
   (if-let [window (seat :window-interaction)]
     (seat/focus seat window)))
@@ -414,7 +537,8 @@
   (put seat :new nil)
   (put seat :window-interaction nil)
   (put seat :pending-action nil)
-  (put seat :op-release nil))
+  (put seat :op-release nil)
+  (put seat :focus-return-to nil))
 
 (defn seat/render [seat]
   (when-let [op (seat :op)]
@@ -502,12 +626,18 @@
   (update wm :windows |(keep window/manage-start $))
   (update wm :seats |(keep seat/manage-start $))
 
-  (each output (wm :outputs) (output/manage output))
-  (each window (wm :windows) (window/manage window))
-  (each seat (wm :seats) (seat/manage seat))
+  # Protect the core manage logic so that manage-finish is always called.
+  # If any step throws (e.g. nil arithmetic on a half-initialized XWayland window),
+  # we log the error but still complete the manage cycle — otherwise the compositor
+  # stops sending manage-start events and all keybindings become unresponsive.
+  (def [ok err] (protect (do
+    (each output (wm :outputs) (output/manage output))
+    (each window (wm :windows) (window/manage window))
+    (each seat (wm :seats) (seat/manage seat))
 
-  (each output (wm :outputs) (wm/layout output))
-  (wm/show-hide)
+    (each output (wm :outputs) (wm/layout output))
+    (wm/show-hide))))
+  (unless ok (eprint "wm/manage error: " err))
 
   (each output (wm :outputs) (output/manage-finish output))
   (each window (wm :windows) (window/manage-finish window))
@@ -516,8 +646,10 @@
   (:manage-finish (registry "river_window_manager_v1")))
 
 (defn wm/render []
-  (each window (wm :windows) (window/render window))
-  (each seat (wm :seats) (seat/render seat))
+  (def [ok err] (protect (do
+    (each window (wm :windows) (window/render window))
+    (each seat (wm :seats) (seat/render seat)))))
+  (unless ok (eprint "wm/render error: " err))
   (:render-finish (registry "river_window_manager_v1")))
 
 (defn wm/handle-event [event]
