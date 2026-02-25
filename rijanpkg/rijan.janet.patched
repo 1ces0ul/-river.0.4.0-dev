@@ -768,8 +768,31 @@
   (fn [seat binding]
     (if-let [window (seat :focused)]
       (if (window :fullscreen)
-        (window/set-fullscreen window nil)
-        (window/set-fullscreen window (window/tag-output window))))))
+        (do
+          (window/set-fullscreen window nil)
+          # Restore pre-fullscreen position and dimensions for floating windows.
+          # Tiled windows don't need this — wm/layout will reposition them.
+          (when (window :float)
+            (when-let [x (window :pre-fullscreen-x)
+                       y (window :pre-fullscreen-y)]
+              (put window :x nil)
+              (put window :y nil)
+              (window/set-position window x y))
+            (when-let [w (window :pre-fullscreen-w)
+                       h (window :pre-fullscreen-h)]
+              (:propose-dimensions (window :obj) w h))
+            (put window :pre-fullscreen-x nil)
+            (put window :pre-fullscreen-y nil)
+            (put window :pre-fullscreen-w nil)
+            (put window :pre-fullscreen-h nil)))
+        (do
+          # Save current geometry before going fullscreen.
+          (when (window :float)
+            (put window :pre-fullscreen-x (window :x))
+            (put window :pre-fullscreen-y (window :y))
+            (put window :pre-fullscreen-w (window :w))
+            (put window :pre-fullscreen-h (window :h)))
+          (window/set-fullscreen window (window/tag-output window)))))))
 
 (defn action/retile []
   "Reset all user-floated windows on the focused output back to tiled.
