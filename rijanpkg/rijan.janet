@@ -35,6 +35,7 @@
               :outer-padding 4
               :inner-padding 4
               :main-ratio 0.60
+              :nmaster 1
               :xkb-bindings @[]
               :pointer-bindings @[]})
 (merge-into config light)
@@ -57,7 +58,7 @@
 
 (defn output/visible [output windows]
   (let [tags (output :tags)]
-    (filter |(tags ($ :tag)) windows)))
+    (filter |(or ($ :sticky) (tags ($ :tag))) windows)))
 
 (defn output/usable-area [output]
   (if-let [[x y w h] (output :non-exclusive-area)]
@@ -96,14 +97,13 @@
   output)
 
 (defn window/set-position
-  "Set position, adjusting for border width"
+  "Set position. Stores the layout coordinate (without border offset) in
+   window :x/:y, and passes the border-adjusted value to the compositor."
   [window x y]
-  (let [border-width ((wm :config) :border-width)
-        x (+ x border-width)
-        y (+ y border-width)]
+  (let [border-width ((wm :config) :border-width)]
     (put window :x x)
     (put window :y y)
-    (:set-position (window :node) x y)))
+    (:set-position (window :node) (+ x border-width) (+ y border-width))))
 
 (defn window/propose-dimensions
   "Propose dimensions, adjusting for border width"
@@ -131,16 +131,20 @@
       (:exit-fullscreen (window :obj)))))
 
 (defn window/tag-output [window]
-  (find |(($ :tags) (window :tag)) (wm :outputs)))
+  (or (find |(($ :tags) (window :tag)) (wm :outputs))
+      (when (window :sticky)
+        (when-let [seat (first (wm :seats))]
+          (seat :focused-output)))))
 
 (defn window/max-overlap-output [window]
   (var max-overlap 0)
   (var max-overlap-output nil)
+  (def bw2 (* 2 ((wm :config) :border-width)))
   (each output (wm :outputs)
-    (def overlap-w (- (min (+ (window :x) (window :w))
+    (def overlap-w (- (min (+ (window :x) (window :w) bw2)
                            (+ (output :x) (output :w)))
                       (max (window :x) (output :x))))
-    (def overlap-h (- (min (+ (window :y) (window :h))
+    (def overlap-h (- (min (+ (window :y) (window :h) bw2)
                            (+ (output :y) (output :h)))
                       (max (window :y) (output :y))))
     (when (and (> overlap-w 0) (> overlap-h 0))
@@ -168,10 +172,14 @@
                                                    (put window :min-h min-h)
                                                    (put window :max-w max-w)
                                                    (put window :max-h max-h))
-      [:dimensions w h] (do (put window :w w) (put window :h h))
+      [:dimensions w h] (do (put window :w w) (put window :h h)
+                            (unless (window :original-w)
+                              (put window :original-w w)
+                              (put window :original-h h)))
       [:app-id app-id] (put window :app-id app-id)
       [:title title] (put window :title title)
-      [:parent parent] (put window :parent (if parent (:get-user-data parent)))
+      [:parent parent] (do (put window :parent-event-received true)
+                           (put window :parent (if parent (:get-user-data parent))))
       [:decoration-hint hint] (put window :decoration-hint hint)
       [:pointer-move-requested seat] (put window :pointer-move-requested
                                           {:seat (:get-user-data seat)})
@@ -218,7 +226,7 @@
    Returns the target window, :clear, or :keep."
   [seat window]
   (when-let [output (seat :focused-output)]
-    (defn visible? [w] (and w ((output :tags) (w :tag))))
+    (defn visible? [w] (and w (or (w :sticky) ((output :tags) (w :tag)))))
     (def visible (output/visible output (wm :render-order)))
     (cond
       # The top fullscreen window always grabs focus when present.
@@ -263,22 +271,22 @@
   (case (seat :layer-focus)
     :exclusive (put seat :focused nil)
     :non-exclusive (do
-                     # When an explicit window target is given, break out of
-                     # non-exclusive layer focus to focus that window.
-                     # When window is nil, still run focus-non-layer so the
-                     # normal focus resolution can clear-focus or pick a
-                     # visible window — otherwise we get stuck in a state
-                     # where focused is nil but layer-focus stays :non-exclusive
-                     # and keybinding actions that depend on seat :focused
-                     # silently fail.
                      (when window
                        (put seat :layer-focus :none))
-                     (focus-non-layer))
+                     (focus-non-layer)
+                     # After non-exclusive layer interaction (e.g. clicking waybar),
+                     # the compositor has given focus to the layer surface.
+                     # Re-assert focus on the current window so the compositor
+                     # sends keyboard events back to it.
+                     (when-let [focused (seat :focused)]
+                       (:focus-window (seat :obj) (focused :obj))))
     :none (focus-non-layer)))
 
 (defn seat/pointer-move [seat window]
   (unless (seat :op)
     (seat/focus seat window)
+    (unless (window :float)
+      (put window :user-float true))
     (window/set-float window true)
     (:op-start-pointer (seat :obj))
     (put seat :op @{:type :move
@@ -289,6 +297,8 @@
 (defn seat/pointer-resize [seat window edges]
   (unless (seat :op)
     (seat/focus seat window)
+    (unless (window :float)
+      (put window :user-float true))
     (window/set-float window true)
     (:op-start-pointer (seat :obj))
     (put seat :op @{:type :resize
@@ -303,60 +313,43 @@
     (:destroy (window :obj))
     window))
 
-(defn window/is-fixed-size [window]
-  "Check if window has a constrained size that makes tiling inappropriate.
-   True when either dimension is fixed (min == max) and non-zero."
-  (and (window :min-w) (window :min-h)
-       (window :max-w) (window :max-h)
-       (> (window :min-w) 0) (> (window :min-h) 0)
-       (> (window :max-w) 0) (> (window :max-h) 0)
-       (or (= (window :min-w) (window :max-w))
-           (= (window :min-h) (window :max-h)))))
-
-(defn window/is-popup-like [window]
-  "Check if window looks like a popup/utility window that should have no
-   decorations. True when both dimensions are completely fixed (min == max)."
-  (and (window :min-w) (window :min-h)
-       (window :max-w) (window :max-h)
-       (> (window :min-w) 0) (> (window :min-h) 0)
-       (= (window :min-w) (window :max-w))
-       (= (window :min-h) (window :max-h))))
+(defn window/is-partially-fixed [window]
+  "True when exactly one dimension is fixed (min == max, non-zero)
+   but the other is not. Indicates a window that shouldn't be tiled
+   (e.g. Moments: width fixed, height flexible)."
+  (def w-fixed (and (window :min-w) (window :max-w)
+                    (> (window :min-w) 0) (> (window :max-w) 0)
+                    (= (window :min-w) (window :max-w))))
+  (def h-fixed (and (window :min-h) (window :max-h)
+                    (> (window :min-h) 0) (> (window :max-h) 0)
+                    (= (window :min-h) (window :max-h))))
+  (and (or w-fixed h-fixed)
+       (not (and w-fixed h-fixed))))
 
 (defn window/manage [window]
   (when (window :new)
-    (if-let [parent (window :parent)]
+    (if (window :parent-event-received)
+      # Received parent event (WM_TRANSIENT_FOR exists) → transient window.
+      # This includes both real parent and client leader (transient → nil).
       (do
-        # Child/transient windows with a real parent:
-        # float them, inherit parent tag, no server-side decorations.
         (put window :managed-as-child true)
         (window/set-float window true)
-        (put window :tag (parent :tag))
-        (if (and (window :w) (> (window :w) 0)
+        (if (and (window :parent)
+                 (window :w) (> (window :w) 0)
                  (window :h) (> (window :h) 0))
           (:propose-dimensions (window :obj) (window :w) (window :h))
-          (if (window/is-popup-like window)
+          (if (and (window :min-w) (> (window :min-w) 0)
+                   (window :min-h) (> (window :min-h) 0))
             (:propose-dimensions (window :obj) (window :min-w) (window :min-h))
-            (:propose-dimensions (window :obj) 0 0))))
+            (:propose-dimensions (window :obj) 0 0)))
+        (when-let [parent (window :parent)]
+          (put window :tag (parent :tag))))
+      # No parent event received → independent top-level window.
       (do
-        # No parent. Check if this looks like a popup/utility window
-        # (fully fixed size, e.g. WeChat emoji panel, avatar popup, menus).
-        # XWayland often sets WM_TRANSIENT_FOR to the client leader window
-        # which has no corresponding wayland surface, so river delivers
-        # [:parent nil] and window :parent stays nil. We must detect these
-        # windows by their size constraints instead.
-        (if (window/is-popup-like window)
-          (do
-            (put window :managed-as-child true)
-            (window/set-float window true)
-            (if (and (window :w) (> (window :w) 0)
-                     (window :h) (> (window :h) 0))
-              (:propose-dimensions (window :obj) (window :w) (window :h))
-              (:propose-dimensions (window :obj) (window :min-w) (window :min-h))))
-          (do
-            (:use-ssd (window :obj))
-            (if (window/is-fixed-size window)
-              (window/set-float window true)
-              (window/set-float window false))))
+        (:use-ssd (window :obj))
+        (if (window/is-partially-fixed window)
+          (window/set-float window true)
+          (window/set-float window false))
         (when-let [seat (first (wm :seats))
                    output (seat :focused-output)]
           (put window :tag (or (min-of (keys (output :tags))) 1))))))
@@ -396,12 +389,14 @@
           (wm :windows))))
 
 (defn- window/center-on-output [window]
-  "Center window on the focused output, or fall back to 0,0."
+  "Center window on the focused output's usable area, or fall back to 0,0."
   (if-let [seat (first (wm :seats))
            output (seat :focused-output)]
-    (window/set-position window
-                         (+ (output :x) (div (- (output :w) (window :w)) 2))
-                         (+ (output :y) (div (- (output :h) (window :h)) 2)))
+    (let [usable (output/usable-area output)
+          bw2 (* 2 ((wm :config) :border-width))]
+      (window/set-position window
+                           (+ (usable :x) (div (- (usable :w) (window :w) bw2) 2))
+                           (+ (usable :y) (div (- (usable :h) (window :h) bw2) 2))))
     (window/set-position window 0 0)))
 
 (defn- set-borders [window status config]
@@ -415,22 +410,23 @@
 
 (defn window/render [window]
   (when (and (not (window :x)) (window :w))
+    (def bw ((wm :config) :border-width))
     (if-let [parent (window :parent)]
-      # Has a real parent — center over parent, or fall back to output center.
+      # Has a real parent — center over parent's content area, or fall back to output center.
       (if (and (parent :x) (parent :y) (parent :w) (parent :h))
         (window/set-position window
-                             (+ (parent :x) (div (- (parent :w) (window :w)) 2))
-                             (+ (parent :y) (div (- (parent :h) (window :h)) 2)))
+                             (+ (parent :x) bw (div (- (parent :w) (window :w)) 2))
+                             (+ (parent :y) bw (div (- (parent :h) (window :h)) 2)))
         (window/center-on-output window))
       # No parent.
       (if (window :managed-as-child)
         # Popup-like window (no real parent due to XWayland client leader).
-        # Try to find a logical parent by app-id and center over it.
+        # Try to find a logical parent by app-id and center over its content area.
         (if-let [logical-parent (window/find-logical-parent window)]
           (window/set-position window
-                               (+ (logical-parent :x)
+                               (+ (logical-parent :x) bw
                                   (div (- (logical-parent :w) (window :w)) 2))
-                               (+ (logical-parent :y)
+                               (+ (logical-parent :y) bw
                                   (div (- (logical-parent :h) (window :h)) 2)))
           (window/center-on-output window))
         # Floating top-level (e.g. Moments) — center on output.
@@ -452,7 +448,17 @@
   (unless (window :managed-as-child)
     (if (find |(= ($ :focused) window) (wm :seats))
       (set-borders window :focused (wm :config))
-      (set-borders window :normal (wm :config)))))
+      (set-borders window :normal (wm :config))))
+  # Clip tiled windows to their allocated layout box so that windows
+  # whose actual size exceeds the proposed size don't visually overflow.
+  (if-let [box (window :layout-box)]
+    (let [[box-x box-y box-w box-h] box
+          bw ((wm :config) :border-width)]
+      (:set-clip-box (window :obj)
+                     (- box-x (window :x) bw)
+                     (- box-y (window :y) bw)
+                     box-w box-h))
+    (:set-clip-box (window :obj) 0 0 0 0)))
 
 (defn seat/manage-start [seat]
   (if (seat :removed)
@@ -499,9 +505,13 @@
         (seat/focus seat return-target)))
     (seat/focus seat nil))
   (each window (wm :windows)
-    (when (and (window :new)
-               (not (window :managed-as-child)))
-      (seat/focus seat window)))
+    (when (window :new)
+      # Popup-like windows (managed-as-child) should not steal focus from
+      # an existing focused window — they expect focus to stay on the main
+      # window. But if nothing is focused (e.g. login window is the only
+      # window), they should receive focus.
+      (unless (and (window :managed-as-child) (seat :focused))
+        (seat/focus seat window))))
   (if-let [window (seat :window-interaction)]
     (seat/focus seat window)))
 
@@ -585,39 +595,231 @@
                  ((output :tags) (window :tag)))
         (:fullscreen (window :obj) (output :obj)))))
   (each window (wm :windows)
-    (if (all-tags (window :tag))
-      (:show (window :obj))
-      (:hide (window :obj)))))
+    (if (window :layout-hidden)
+      (:hide (window :obj))
+      (if (or (window :sticky) (all-tags (window :tag)))
+        (:show (window :obj))
+        (:hide (window :obj))))))
 
-(defn wm/layout [output]
-  (def windows (filter |(not ($ :float)) (output/visible output (wm :windows))))
-  (when (empty? windows) (break))
-  (def side-count (- (length windows) 1))
-  (def usable (output/usable-area output))
-  (def total-w (max 0 (- (usable :w) (* 2 ((wm :config) :outer-padding)))))
-  (def total-h (max 0 (- (usable :h) (* 2 ((wm :config) :outer-padding)))))
-  (def main-w (if (= 0 side-count) total-w (math/round (* total-w ((wm :config) :main-ratio)))))
+(defn- clamp-to-hints [window box-x box-y box-w box-h]
+  "Constrain window dimensions to its min/max size hints, but never
+   exceed the allocated box. The box (layout space) is the hard limit;
+   the window's hints are best-effort. Center the result in the box.
+   Hints are content sizes (no border); box is layout size (with border)."
+  (def bw2 (* 2 ((wm :config) :border-width)))
+  (var w box-w)
+  (var h box-h)
+  # Shrink to max if smaller than box (convert content hint to layout space)
+  (when (and (window :max-w) (> (window :max-w) 0))
+    (set w (min w (+ (window :max-w) bw2))))
+  (when (and (window :max-h) (> (window :max-h) 0))
+    (set h (min h (+ (window :max-h) bw2))))
+  # Expand to min, but never exceed box
+  (when (and (window :min-w) (> (window :min-w) 0))
+    (set w (min box-w (max w (+ (window :min-w) bw2)))))
+  (when (and (window :min-h) (> (window :min-h) 0))
+    (set h (min box-h (max h (+ (window :min-h) bw2)))))
+  # Center within box
+  (def cx (+ box-x (div (- box-w w) 2)))
+  (def cy (+ box-y (div (- box-h h) 2)))
+  [cx cy w h])
+
+
+# --- Layout engines ---
+
+(defn layout/master-stack
+  "Master-stack with configurable direction. location: :left :right :top :bottom"
+  [windows usable cfg location]
+  (when (empty? windows) (break @[]))
+  (def n (length windows))
+  (def nmaster (min n (max 1 (or (cfg :nmaster) 1))))
+  (def side-count (- n nmaster))
+  (def outer (cfg :outer-padding))
+  (def inner (cfg :inner-padding))
+  (def [total-w total-h]
+    (let [w (max 0 (- (usable :w) (* 2 outer)))
+          h (max 0 (- (usable :h) (* 2 outer)))]
+      (if (or (= location :top) (= location :bottom)) [h w] [w h])))
+  (def main-w (if (= 0 side-count) total-w (math/round (* total-w (cfg :main-ratio)))))
   (def side-w (- total-w main-w))
+  (def master-h (if (= 0 nmaster) 0 (div total-h nmaster)))
+  (def master-h-rem (if (= 0 nmaster) 0 (% total-h nmaster)))
   (def side-h (if (= 0 side-count) 0 (div total-h side-count)))
   (def side-h-rem (if (= 0 side-count) 0 (% total-h side-count)))
-  (->> (range (length windows))
-       (map (fn [i]
-              (case i
-                0 [0 0 main-w total-h]
-                1 [main-w 0 side-w (+ side-h side-h-rem)]
-                [main-w (+ side-h-rem (* side-h (- i 1)))
-                 side-w side-h])))
-       (map (fn [[x y w h]]
-              (def outer ((wm :config) :outer-padding))
-              (def inner ((wm :config) :inner-padding))
-              [(+ x outer inner) (+ y outer inner)
-               (- w (* 2 inner)) (- h (* 2 inner))]))
-       (map (fn [[x y w h]]
-              [(+ x (usable :x)) (+ y (usable :y)) w h]))
-       (map (fn [window box]
-              (window/set-position window ;(slice box 0 2))
-              (window/propose-dimensions window ;(slice box 2 4)))
-            windows)))
+  (seq [i :range [0 n]]
+    (def [rx ry rw rh]
+      (if (< i nmaster)
+        # Master area
+        (let [y (+ (* i master-h) (if (> i 0) (+ master-h-rem inner) 0))
+              w (if (> side-count 0) (- main-w (div inner 2)) main-w)
+              h (- (+ master-h (if (= i 0) master-h-rem 0)) (if (> i 0) inner 0))]
+          [0 y w h])
+        # Stack area
+        (let [si (- i nmaster)
+              y (+ (* si side-h) (if (> si 0) (+ side-h-rem inner) 0))
+              w (- side-w (div inner 2))
+              h (- (+ side-h (if (= si 0) side-h-rem 0)) (if (> si 0) inner 0))]
+          [(+ main-w (div inner 2)) y w h])))
+    # Apply outer + inner padding
+    (def [rx ry rw rh]
+      [(+ rx outer inner) (+ ry outer inner)
+       (- rw (* 2 inner)) (- rh (* 2 inner))])
+    # Map to screen coordinates; :right/:bottom mirror :left/:top
+    (case location
+      :left   [(+ rx (usable :x))
+               (+ ry (usable :y))
+               rw rh]
+      :right  [(+ (- (usable :w) rx rw) (usable :x))
+               (+ ry (usable :y))
+               rw rh]
+      :top    [(+ ry (usable :x))
+               (+ rx (usable :y))
+               rh rw]
+      :bottom [(+ ry (usable :x))
+               (+ (- (usable :h) rx rw) (usable :y))
+               rh rw])))
+
+(defn layout/scroller
+  "Scroller: focused window centered, neighbors extend outward with same mfact width.
+   Windows beyond screen edge are hidden. Inspired by kwm scroller.zig."
+  [windows usable cfg focused-window]
+  (when (empty? windows) (break @[]))
+  (def outer (cfg :outer-padding))
+  (def inner (cfg :inner-padding))
+  (def avail-w (max 0 (- (usable :w) (* 2 outer))))
+  (def avail-h (max 0 (- (usable :h) (* 2 outer))))
+  (def mfact (or (cfg :scroller-mfact) (cfg :main-ratio)))
+  (def location (or (cfg :scroller-location) :center))
+  (def focus-idx (or (index-of focused-window windows)
+                     # focused window might be floating; find nearest tiled neighbor
+                     0))
+  (def n (length windows))
+  (def master-w (math/round (* avail-w mfact)))
+  (def master-x
+    (case location
+      :center (div (- avail-w master-w) 2)
+      :left 0
+      0))
+  (def y (+ outer (usable :y)))
+  (def x-off (+ outer (usable :x)))
+
+  (def result (array/new-filled n nil))
+
+  # Place focused window
+  (put result focus-idx
+       [(+ master-x x-off) y master-w avail-h])
+
+  # Place windows to the left of focus
+  (var x master-x)
+  (var left-hidden false)
+  (for i 0 focus-idx
+    (def wi (- focus-idx 1 i))
+    (def w (math/round (* avail-w mfact)))
+    (set x (- x inner))
+    (if (or left-hidden (< x 0))
+      (do (set left-hidden true)
+          (put result wi :hide))
+      (do
+        (set x (- x w))
+        (put result wi [(+ x x-off) y w avail-h]))))
+
+  # Place windows to the right of focus
+  (set x (+ master-x master-w))
+  (var right-hidden false)
+  (for i (+ focus-idx 1) n
+    (set x (+ x inner))
+    (def w (math/round (* avail-w mfact)))
+    (if (or right-hidden (>= x avail-w))
+      (do (set right-hidden true)
+          (put result i :hide))
+      (do
+        (put result i [(+ x x-off) y w avail-h])
+        (set x (+ x w)))))
+
+  # Apply inner padding to each visible window to match master-stack/grid behavior
+  (map |(if (= $ :hide) :hide
+          (let [[bx by bw bh] $]
+            [(+ bx inner) (+ by inner) (- bw (* 2 inner)) (- bh (* 2 inner))]))
+       result))
+
+(defn layout/grid
+  "Grid layout."
+  [windows usable cfg]
+  (when (empty? windows) (break @[]))
+  (def n (length windows))
+  (def outer (cfg :outer-padding))
+  (def inner (cfg :inner-padding))
+  (def cols (math/ceil (math/sqrt n)))
+  (def rows (math/ceil (/ n cols)))
+  (def avail-w (max 0 (- (usable :w) (* 2 outer))))
+  (def avail-h (max 0 (- (usable :h) (* 2 outer))))
+  (def cell-w (div avail-w cols))
+  (def cell-w-rem (% avail-w cols))
+  (def cell-h (div avail-h rows))
+  (def cell-h-rem (% avail-h rows))
+  (def last-row-count (- n (* (- rows 1) cols)))
+  (def last-row-pad (div (* (- cols last-row-count) cell-w) 2))
+  (seq [i :range [0 n]]
+    (def row (div i cols))
+    (def col (% i cols))
+    (def x (+ (* col cell-w) (if (> col 0) cell-w-rem 0)
+              (if (= row (- rows 1)) last-row-pad 0)))
+    (def y (+ (* row cell-h) (if (> row 0) (+ inner cell-h-rem) 0)))
+    (def w (- (+ cell-w (if (= col 0) cell-w-rem 0))
+              (if (< col (- cols 1)) inner 0)))
+    (def h (- (+ cell-h (if (= row 0) cell-h-rem 0))
+              (if (> row 0) inner 0)))
+    # Apply inner padding to match master-stack behavior
+    [(+ x outer inner (usable :x)) (+ y outer inner (usable :y))
+     (- w (* 2 inner)) (- h (* 2 inner))]))
+
+(defn wm/layout [output]
+  (def layout-type (or (output :layout) :tile))
+  (def all-visible (output/visible output (wm :windows)))
+  # Clear transient layout state for all visible windows on this output,
+  # so switching layouts doesn't leave stale marks or clip boxes.
+  (each window all-visible
+    (put window :layout-hidden nil)
+    (put window :layout-box nil))
+  (def windows (filter |(not ($ :float)) all-visible))
+  (when (empty? windows) (break))
+  (def usable (output/usable-area output))
+  # Per-output layout parameters, falling back to global config.
+  (def gcfg (wm :config))
+  (def cfg @{:outer-padding (gcfg :outer-padding)
+             :inner-padding (gcfg :inner-padding)
+             :main-ratio    (or (output :main-ratio) (gcfg :main-ratio))
+             :nmaster       (or (output :nmaster) (gcfg :nmaster))
+             :scroller-mfact    (or (output :scroller-mfact) (gcfg :scroller-mfact))
+             :scroller-location (or (output :scroller-location) (gcfg :scroller-location))})
+
+  # Get focused window for scroller layout
+  (def focused-window
+    (when-let [seat (first (wm :seats))]
+      (seat :focused)))
+
+  # Compute layout boxes for each tiled window
+  (def tile-location (or (output :tile-location) :left))
+  (def boxes
+    (case layout-type
+      :tile     (layout/master-stack windows usable cfg tile-location)
+      :scroller (layout/scroller windows usable cfg focused-window)
+      :grid     (layout/grid windows usable cfg)
+      # default: tile
+      (layout/master-stack windows usable cfg tile-location)))
+
+  (each [window box] (map tuple windows boxes)
+    (if (= box :hide)
+      (do
+        (put window :layout-hidden true)
+        (:hide (window :obj)))
+      (let [[box-x box-y box-w box-h] box
+            [x y w h] (clamp-to-hints window box-x box-y box-w box-h)]
+        (put window :layout-hidden nil)
+        # Store the original layout box (before clamp) for clip in render.
+        (put window :layout-box [box-x box-y box-w box-h])
+        (window/set-position window x y)
+        (window/propose-dimensions window w h)))))
 
 (defn wm/manage []
   (update wm :render-order |(->> $ (filter (fn [window] (not (window :closed))))))
@@ -665,7 +867,6 @@
     [:window obj] (array/insert (wm :windows) 0 (window/create obj))))
 
 (defn registry/handle-event [event]
-  (def obj (registry :obj))
   (match event
     [:global name interface version]
     (when-let [required-version (get required-interfaces interface)]
@@ -698,37 +899,88 @@
   (fn [seat binding]
     (when-let [focused (seat :focused)
                output (window/tag-output focused)
-               visible (output/visible output (wm :windows))
-               target (if (= focused (first visible)) (get visible 1) focused)
-               i (assert (index-of target (wm :windows)))]
-      (array/remove (wm :windows) i)
-      (array/insert (wm :windows) 0 target)
-      (seat/focus seat (first (wm :windows))))))
+               visible (filter |(not ($ :float)) (output/visible output (wm :windows)))]
+      (when (and (not (focused :float)) (not (empty? visible)))
+        (def target (if (= focused (first visible)) (get visible 1) focused))
+        (when-let [i (index-of target (wm :windows))]
+          (array/remove (wm :windows) i)
+          (array/insert (wm :windows) 0 target)
+          (seat/focus seat (first (wm :windows))))))))
 
 (defn action/focus [dir]
   (fn [seat binding]
     (seat/focus seat (action/target seat dir))))
 
-(defn action/focus-output []
+(defn action/focus-output [dir]
+  "Cycle focus to next/prev output. dir: :next :prev"
   (fn [seat binding]
     (when-let [focused (seat :focused-output)
-               i (assert (index-of focused (wm :outputs)))
-               target (or (get (wm :outputs) (+ i 1))
-                          (first (wm :outputs)))]
-      (seat/focus-output seat target)
-      (seat/focus seat nil))))
+               i (assert (index-of focused (wm :outputs)))]
+      (def target (case dir
+                    :next (or (get (wm :outputs) (+ i 1))
+                              (first (wm :outputs)))
+                    :prev (or (get (wm :outputs) (- i 1))
+                              (last (wm :outputs)))))
+      (when target
+        (seat/focus-output seat target)
+        (seat/focus seat nil)))))
 
 (defn action/float []
   (fn [seat binding]
     (if-let [window (seat :focused)]
-      (window/set-float window (not (window :float))))))
+      (do
+        (window/set-float window (not (window :float)))
+        (if (window :float)
+          (do
+            (put window :user-float true)
+            # Restore original dimensions when returning to float
+            (when (and (window :original-w) (window :original-h))
+              (:propose-dimensions (window :obj) (window :original-w) (window :original-h)))
+            (put window :x nil)
+            (put window :y nil))
+          (put window :user-float nil))))))
 
 (defn action/fullscreen []
   (fn [seat binding]
     (if-let [window (seat :focused)]
       (if (window :fullscreen)
-        (window/set-fullscreen window nil)
-        (window/set-fullscreen window (window/tag-output window))))))
+        (do
+          (window/set-fullscreen window nil)
+          # Restore pre-fullscreen position and dimensions for floating windows.
+          # Tiled windows don't need this — wm/layout will reposition them.
+          (when (window :float)
+            (when-let [x (window :pre-fullscreen-x)
+                       y (window :pre-fullscreen-y)]
+              (put window :x nil)
+              (put window :y nil)
+              (window/set-position window x y))
+            (when-let [w (window :pre-fullscreen-w)
+                       h (window :pre-fullscreen-h)]
+              (:propose-dimensions (window :obj) w h))
+            (put window :pre-fullscreen-x nil)
+            (put window :pre-fullscreen-y nil)
+            (put window :pre-fullscreen-w nil)
+            (put window :pre-fullscreen-h nil)))
+        (do
+          # Save current geometry before going fullscreen.
+          (when (window :float)
+            (put window :pre-fullscreen-x (window :x))
+            (put window :pre-fullscreen-y (window :y))
+            (put window :pre-fullscreen-w (window :w))
+            (put window :pre-fullscreen-h (window :h)))
+          (window/set-fullscreen window (window/tag-output window)))))))
+
+(defn action/retile []
+  "Reset all user-floated windows on the focused output back to tiled.
+   Does not affect programmatically floated windows (popups, fixed-size)."
+  (fn [seat binding]
+    (when-let [output (seat :focused-output)]
+      (each window (output/visible output (wm :windows))
+        (when (window :user-float)
+          (window/set-float window false)
+          (put window :user-float nil)
+          (put window :x nil)
+          (put window :y nil))))))
 
 (defn action/set-tag [tag]
   (fn [seat binding]
@@ -762,7 +1014,8 @@
   (fn [seat binding]
     (when-let [output (seat :focused-output)]
       (each o (wm :outputs) (put o :tags @{}))
-      (put output :tags (table ;(mapcat |[$ true] (range 1 10)))))))
+      (put output :tags (table ;(mapcat |[$ true] (range 1 10))))
+      (fallback-tags (wm :outputs)))))
 
 (defn action/pointer-move []
   (fn [seat binding]
@@ -784,6 +1037,156 @@
     (each other (seat :pointer-bindings)
       (unless (= other binding)
         (request (other :obj))))))
+
+# ============================================================================
+# Additional features
+# ============================================================================
+# --- Pluggable layout actions ---
+
+(defn action/set-layout
+  "Switch layout on focused output. type: :tile :scroller :grid"
+  [layout-type]
+  (fn [seat binding]
+    (when-let [output (seat :focused-output)]
+      (def cur (or (output :layout) :tile))
+      (put output :prev-layout cur)
+      (put output :layout layout-type))))
+
+(defn action/set-tile-location
+  "Set master-stack direction on focused output. location: :left :right :top :bottom"
+  [location]
+  (fn [seat binding]
+    (when-let [output (seat :focused-output)]
+      (put output :tile-location location))))
+
+(defn action/switch-to-previous-layout []
+  (fn [seat binding]
+    (when-let [output (seat :focused-output)]
+      (def prev (or (output :prev-layout) :tile))
+      (def cur (or (output :layout) :tile))
+      (put output :prev-layout cur)
+      (put output :layout prev))))
+
+
+# --- Additional actions ---
+
+(defn action/swap [dir]
+  "Swap focused window with next/prev tiled window."
+  (fn [seat binding]
+    (when-let [window (seat :focused)
+               output (window/tag-output window)
+               visible (filter |(not ($ :float)) (output/visible output (wm :windows)))
+               i (index-of window visible)]
+      (def ti (case dir
+                :next (if (< (+ i 1) (length visible)) (+ i 1) 0)
+                :prev (if (> i 0) (- i 1) (- (length visible) 1))))
+      (def target (get visible ti))
+      (when (and target (not= target window))
+        (def wi (assert (index-of window (wm :windows))))
+        (def tii (assert (index-of target (wm :windows))))
+        (put (wm :windows) wi target)
+        (put (wm :windows) tii window)))))
+
+(defn action/send-to-output [dir]
+  "Send focused window to next/prev output."
+  (fn [seat binding]
+    (when-let [window (seat :focused)
+               output (window/tag-output window)
+               i (index-of output (wm :outputs))]
+      (def target (case dir
+                    :next (or (get (wm :outputs) (+ i 1)) (first (wm :outputs)))
+                    :prev (or (get (wm :outputs) (- i 1)) (last (wm :outputs)))))
+      (unless (= target output)
+        (put window :tag (or (min-of (keys (target :tags))) 1))))))
+
+
+(defn action/sticky []
+  "Toggle sticky: window visible on all tags."
+  (fn [seat binding]
+    (when-let [window (seat :focused)]
+      (put window :sticky (not (window :sticky))))))
+
+(defn action/set-main-ratio [delta]
+  "Adjust main-ratio on focused output by delta."
+  (fn [seat binding]
+    (when-let [output (seat :focused-output)]
+      (def cur (or (output :main-ratio) ((wm :config) :main-ratio)))
+      (put output :main-ratio (max 0.1 (min 0.9 (+ cur delta)))))))
+
+(defn action/set-nmaster [delta]
+  "Adjust nmaster count on focused output."
+  (fn [seat binding]
+    (when-let [output (seat :focused-output)]
+      (def cur (or (output :nmaster) ((wm :config) :nmaster) 1))
+      (put output :nmaster (max 1 (+ cur delta))))))
+
+(defn action/float-move [dx dy]
+  "Move focused floating window by dx/dy pixels, clamped to output usable area."
+  (fn [seat binding]
+    (when-let [window (seat :focused)]
+      (when (and (window :float) (window :x) (window :y) (window :w) (window :h))
+        (def output (or (window/tag-output window) (seat :focused-output)))
+        (when output
+          (def usable (output/usable-area output))
+          (def gap ((wm :config) :outer-padding))
+          (def bw2 (* 2 ((wm :config) :border-width)))
+          (def min-x (+ (usable :x) (- (+ (window :w) bw2)) gap))
+          (def max-x (- (+ (usable :x) (usable :w)) gap))
+          (def min-y (+ (usable :y) (- (+ (window :h) bw2)) gap))
+          (def max-y (- (+ (usable :y) (usable :h)) gap))
+          (def new-x (max min-x (min (+ (window :x) dx) max-x)))
+          (def new-y (max min-y (min (+ (window :y) dy) max-y)))
+          (window/set-position window new-x new-y))))))
+
+(defn action/float-resize [dw dh]
+  "Resize focused floating window, always centered in usable area.
+   Size is clamped to client hints and usable area; once any edge
+   reaches the boundary, it stops growing."
+  (fn [seat binding]
+    (when-let [window (seat :focused)]
+      (when (and (window :float) (window :w) (window :h) (window :x) (window :y))
+        (def output (or (window/tag-output window) (seat :focused-output)))
+        (when output
+          (def usable (output/usable-area output))
+          (def bw2 (* 2 ((wm :config) :border-width)))
+          (def old-tw (+ (window :w) bw2))
+          (def old-th (+ (window :h) bw2))
+          # Client hints (content → layout space)
+          (def hint-min-w (if (and (window :min-w) (> (window :min-w) 0))
+                            (+ (window :min-w) bw2) 1))
+          (def hint-min-h (if (and (window :min-h) (> (window :min-h) 0))
+                            (+ (window :min-h) bw2) 1))
+          (def hint-max-w (if (and (window :max-w) (> (window :max-w) 0))
+                            (+ (window :max-w) bw2) (usable :w)))
+          (def hint-max-h (if (and (window :max-h) (> (window :max-h) 0))
+                            (+ (window :max-h) bw2) (usable :h)))
+          # Clamp to hints and usable area
+          (def new-w (max hint-min-w (min (+ old-tw dw) (min hint-max-w (usable :w)))))
+          (def new-h (max hint-min-h (min (+ old-th dh) (min hint-max-h (usable :h)))))
+          # Center in usable area
+          (def new-x (+ (usable :x) (div (- (usable :w) new-w) 2)))
+          (def new-y (+ (usable :y) (div (- (usable :h) new-h) 2)))
+          (window/set-position window new-x new-y)
+          (window/propose-dimensions window new-w new-h))))))
+
+(defn action/float-snap [edge]
+  "Snap floating window to output edge."
+  (fn [seat binding]
+    (when-let [window (seat :focused)
+               output (window/tag-output window)]
+      (when (and (window :float) (window :x) (window :y) (window :w) (window :h))
+        (def usable (output/usable-area output))
+        (def bw2 (* 2 ((wm :config) :border-width)))
+        (case edge
+          :left   (window/set-position window (usable :x) (window :y))
+          :right  (window/set-position window
+                                       (- (+ (usable :x) (usable :w)) (window :w) bw2)
+                                       (window :y))
+          :top    (window/set-position window (window :x) (usable :y))
+          :bottom (window/set-position window
+                                       (window :x)
+                                       (- (+ (usable :y) (usable :h)) (window :h) bw2)))))))
+
 
 # Only main is marshaled when building a standalone executable,
 # so we must capture the REPL environment outside of main.
