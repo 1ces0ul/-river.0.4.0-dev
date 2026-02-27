@@ -1,4 +1,4 @@
-Tips: 基于我fork的rijan仓库里的源代码(2026年2月5号) 这里有两份rijan源码（都删除了背景色代码方便使用swww展示动图背景），其中rijan.janet是最新的在rijan.janet.patched基础上更深入的窗口绘制逻辑升级并增加了grid，scroller布局，rijan.janet.patched是在原版rijan基础上的xwayland窗口绘制逻辑进行了优化。
+Tips: 基于我fork的rijan仓库里的源代码(2026年2月5号) 这里有两份rijan源码（都删除了背景色代码方便使用swww展示动图背景），其中rijan.janet是最新的在rijan.janet.patched基础上更深入的窗口绘制逻辑升级并增加了grid，scroller布局，rijan.janet.patched是在原版rijan基础上的xwayland窗口绘制逻辑进行了优化。init.janet是针对最新的rijan.janet配置的，rijan.janet.patched仅用于历史记录。
 
 rijan.janet.patched文件中全部改动总结
 1. seat/focus — 拆分为 seat/resolve-focus-target（纯逻辑）、seat/apply-focus（执行聚焦）、seat/clear-focus（清除聚焦），seat/focus 本身变成了简洁的调度器
