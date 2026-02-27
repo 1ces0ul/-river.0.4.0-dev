@@ -18,7 +18,8 @@
 (defn- notify [msg &opt title level]
   (default title "Rijan 系统")
   (default level "normal")
-  (os/spawn ["notify-send" "-a" "Rijan" "-u" level title msg] :p))
+  (ev/spawn
+    (os/proc-wait (os/spawn ["notify-send" "-a" "Rijan" "-u" level title msg] :p))))
 
 # [Waybar 启动指令定义]
 (def waybar-cmd (string "waybar -c '" (paths :waybar-conf) "' -s '" (paths :waybar-css) "'"))
@@ -56,7 +57,58 @@
   [:r {:mod4 true :shift true} (action/retile)]
   [:a {:mod4 true} (action/spawn ["sh" "-c" "grim -g \"$(slurp)\" - | wl-copy"])]
   [:Escape {:mod4 true :mod1 true :shift true :ctrl true} (action/passthrough)]
-  [:0 {:mod4 true} (action/focus-all-tags)])
+  [:0 {:mod4 true} (action/focus-all-tags)]
+
+  # ---- 新增功能 ----
+
+  # 窗口交换
+  [:j {:mod4 true :shift true} (action/swap :next)]
+  [:k {:mod4 true :shift true} (action/swap :prev)]
+
+  # 发送窗口到其他输出
+  [:j {:mod4 true :ctrl true} (action/send-to-output :next)]
+  [:k {:mod4 true :ctrl true} (action/send-to-output :prev)]
+
+  # 布局切换: Mod4+Alt+t/s/g
+  [:t {:mod4 true :mod1 true} (action/set-layout :tile)]
+  [:s {:mod4 true :mod1 true} (action/set-layout :scroller)]
+  [:g {:mod4 true :mod1 true} (action/set-layout :grid)]
+  [:Tab {:mod4 true :mod1 true} (action/switch-to-previous-layout)]
+
+  # master 方向: Mod4+Alt+方向布局
+  [:h {:mod4 true :mod1 true} (action/set-tile-location :left)]
+  [:l {:mod4 true :mod1 true} (action/set-tile-location :right)]
+  [:k {:mod4 true :mod1 true} (action/set-tile-location :top)]
+  [:j {:mod4 true :mod1 true} (action/set-tile-location :bottom)]
+
+  # main-ratio 调整
+  [:l {:mod4 true} (action/set-main-ratio 0.05)]
+  [:h {:mod4 true} (action/set-main-ratio -0.05)]
+
+  # nmaster 调整
+  [:equal {:mod4 true} (action/set-nmaster 1)]
+  [:minus {:mod4 true} (action/set-nmaster -1)]
+
+  # sticky 窗口
+  [:s {:mod4 true :ctrl true} (action/sticky)]
+
+  # 浮动窗口键盘移动: Mod4+Ctrl+Shift+hjkl
+  [:h {:mod4 true :ctrl true :shift true} (action/float-move -20 0)]
+  [:l {:mod4 true :ctrl true :shift true} (action/float-move 20 0)]
+  [:k {:mod4 true :ctrl true :shift true} (action/float-move 0 -20)]
+  [:j {:mod4 true :ctrl true :shift true} (action/float-move 0 20)]
+
+  # 浮动窗口键盘缩放: Mod4+Mod1+Shift+hjkl
+  [:h {:mod4 true :mod1 true :shift true} (action/float-resize -20 0)]
+  [:l {:mod4 true :mod1 true :shift true} (action/float-resize 20 0)]
+  [:k {:mod4 true :mod1 true :shift true} (action/float-resize 0 -20)]
+  [:j {:mod4 true :mod1 true :shift true} (action/float-resize 0 20)]
+
+  # 浮动窗口吸附屏幕边缘: Mod4+Mod1+Ctrl+hjkl
+  [:h {:mod4 true :mod1 true :ctrl true} (action/float-snap :left)]
+  [:l {:mod4 true :mod1 true :ctrl true} (action/float-snap :right)]
+  [:k {:mod4 true :mod1 true :ctrl true} (action/float-snap :top)]
+  [:j {:mod4 true :mod1 true :ctrl true} (action/float-snap :bottom)])
 
 # [工作区 1-10 自动化循环生成]
 (for i 1 10
