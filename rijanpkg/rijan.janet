@@ -24,8 +24,8 @@
 
 # https://protesilaos.com/emacs/modus-themes-colors
 (def light @{:background 0xffffff
-             :border-normal 0x9f9f9f
-             :border-focused 0x000000})
+             :border-normal 0x000000
+             :border-focused 0x9e9e9e})
 
 (def dark @{:background 0x000000
             :border-normal 0x646464
