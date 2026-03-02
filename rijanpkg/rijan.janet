@@ -24,8 +24,8 @@
 
 # https://protesilaos.com/emacs/modus-themes-colors
 (def light @{:background 0xffffff
-             :border-normal 0x000000
-             :border-focused 0x9e9e9e})
+             :border-normal 0x9f9f9f
+             :border-focused 0x000000})
 
 (def dark @{:background 0x000000
             :border-normal 0x646464
@@ -309,11 +309,11 @@
                     :dx 0 :dy 0})))
 
 (defn window/manage-start [window]
-  (if (window :closed)
-    (do
-      (:destroy (window :obj))
-      (:destroy (window :node)))
-    window))
+ (if (window :closed)
+  (do
+   (:destroy (window :obj))
+   (:destroy (window :node)))
+  window))
 
 (defn window/is-partially-fixed [window]
   "True when exactly one dimension is fixed (min == max, non-zero)
@@ -348,7 +348,10 @@
           (put window :tag (parent :tag))))
       # No parent event received → independent top-level window.
       (do
-        (:use-ssd (window :obj))
+        (def hint (or (window :decoration-hint) :no-preference))
+        (if (or (= hint :only-supports-csd) (= hint :prefers-csd))
+          (:use-csd (window :obj))
+          (:use-ssd (window :obj)))
         (if (window/is-partially-fixed window)
           (window/set-float window true)
           (window/set-float window false))
@@ -446,11 +449,13 @@
         (array/remove (wm :render-order) window-idx)
         (array/push (wm :render-order) window)
         (:place-top (window :node)))))
-  # Child/transient windows get no borders.
+  # Child/transient windows and CSD windows get no borders.
   (unless (window :managed-as-child)
-    (if (find |(= ($ :focused) window) (wm :seats))
-      (set-borders window :focused (wm :config))
-      (set-borders window :normal (wm :config))))
+    (def hint (or (window :decoration-hint) :no-preference))
+    (when (or (= hint :prefers-ssd) (= hint :no-preference))
+      (if (find |(= ($ :focused) window) (wm :seats))
+        (set-borders window :focused (wm :config))
+        (set-borders window :normal (wm :config)))))
   # Clip tiled windows to their allocated layout box so that windows
   # whose actual size exceeds the proposed size don't visually overflow.
   (if-let [box (window :layout-box)]
