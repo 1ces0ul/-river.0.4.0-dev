@@ -51,12 +51,12 @@ The original Rijan (by Isaac Freund) is an elegant, minimal window manager (~650
 
 This fork is based on the original Rijan source from **Feb 5, 2026**. Two main source files are provided:
 
-- **`rijan.janet` (latest)** – The main window‑manager file. It contains the upgraded window‑drawing logic and adds the `grid` and `scroller` layouts.
-- **`rijan.janet.patched` (historical)** – An earlier version that optimizes XWayland window‑drawing logic. Kept for reference.
+- **`rijan.janet.patched` (latest)** – The main window‑manager file. It contains the upgraded window‑drawing logic and adds the `grid` and `scroller` layouts.
+- **`rijan.janet.ref` (reference)** – An earlier version that optimizes XWayland window‑drawing logic. Kept for reference.
 
 Both files have the background‑color code removed, making it easy to use tools like `swww` for animated wallpapers.
 
-**`init.janet`** is the configuration file that works with the latest `rijan.janet`. It launches your status bar (`waybar`), notification daemon (`dunst`), input method (`fcitx5`), wallpaper (`swww`), and sets up all keybindings.
+**`init.janet`** is the configuration file that works with the latest `rijan.janet.patched`. It launches your status bar (`waybar`), notification daemon (`dunst`), input method (`fcitx5`), wallpaper (`swww`), and sets up all keybindings.
 
 ---
 
