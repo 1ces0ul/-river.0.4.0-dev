@@ -73,19 +73,15 @@ sudo pacman -S janet
 jpm install spork
 ```
 
-### 2. Get the Source
+### 2. Get the Source and Install
 
 ```bash
 git clone https://github.com/1ces0ul/config-river.0.4.0-dev.git
 cd config-river.0.4.0-dev/rijanpkg
+makepkg -fsi
 ```
 
-Copy the `rijanpkg` directory (or its contents) to your Rijan config location:
-
-```bash
-mkdir -p ~/.config/rijan
-cp -r * ~/.config/rijan/
-```
+This builds and installs the Rijan package. The PKGBUILD handles placing files in the correct locations.
 
 ### 3. Configure `init.janet`
 
