@@ -192,8 +192,6 @@ You’ll get a Janet prompt. Try evaluating some expressions:
 
 ## Deep Dive: Modification Details
 
-*(This section is a condensed version of the full Chinese tutorial. For a complete walkthrough, see the [Chinese version](#chinese-version) below.)*
-
 ### Layout Engines
 
 - **Master‑Stack** – The classic dwm‑style layout. Master area can be placed left, right, top, or bottom. Number of master windows (`nmaster`) and master ratio are adjustable.
