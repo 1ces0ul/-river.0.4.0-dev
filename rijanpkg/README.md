@@ -202,6 +202,33 @@ You’ll get a Janet prompt. Try evaluating some expressions:
 - **Scroller** – Inspired by PaperWM/niri. The focused window stays centered; neighboring windows extend to the sides. Windows that would go off‑screen are hidden.
 - **Grid** – Automatically arranges windows in a grid, centering the last row.
 
+### Window Decoration (Border Fix)
+
+**Problem:** All windows were appearing without any server-side rendered (SSD) borders.
+**Cause:** The `decoration_hint` values (e.g., `0, 1, 2, 3`) received from the `river_layout_manager_v1` protocol are automatically converted into Janet `keywords` (e.g., `:only-supports-csd`, `:prefers-csd`, `:prefers-ssd`, `:no-preference`) by the Wayland binding layer. However, Rijan’s `window/manage` and `window/render` functions were incorrectly comparing these `keyword` hints against `integers`. Since a keyword can never equal an integer, the border-drawing logic failed, preventing any borders from being drawn.
+**Fix:** The code was updated to compare `decoration-hint` values against their corresponding Janet `keywords` instead of `integers`. For example, `(= hint 0)` was changed to `(= hint :only-supports-csd)`. The default fallback hint was also changed from `3` to `:no-preference`.
+
+**Decoration Hint Values (`river_layout_manager_v1`):**
+
+| Value | Meaning | Rijan Keyword | Typical Windows |
+|:------|:--------|:--------------|:----------------|
+| `0` | `only_supports_csd` | `:only-supports-csd` | Telegram, Chrome, X11 apps without MOTIF |
+| `1` | `prefers_csd` | `:prefers-csd` | WeChat (MOTIF `no_border`) |
+| `2` | `prefers_ssd` | `:prefers-ssd` | GTK4 apps, X11 apps requesting decoration |
+| `3` | `no_preference` | `:no-preference` | XDG toplevel only |
+
+**Border Drawing Decision:**
+
+| Window Type | Border? | Decoration Mode |
+|:------------|:--------|:----------------|
+| Child/Transient (`managed-as-child`) | ✗ No | None |
+| Independent toplevel + focused (hint 2/3) | ✓ Yes (focused color) | `use-ssd` |
+| Independent toplevel + unfocused (hint 2/3) | ✓ Yes (normal color) | `use-ssd` |
+| CSD window (hint 0/1) | ✗ No | `use-csd` |
+| Fullscreen | ✓ Yes* | `use-ssd` |
+
+\*Protocol hides borders when fullscreen.
+
 ### Child‑Window Handling
 
 XWayland popups (e.g., file dialogs, login windows) are tricky because of `WM_TRANSIENT_FOR` and client‑leader semantics. This fork adds:
@@ -263,7 +290,7 @@ The original Rijan used `single‑pixel‑buffer` to draw a solid background. Th
 ## Chinese Version
 
 For a detailed, Chinese‑language walkthrough of the modifications (including code snippets and design rationale), see the full tutorial:  
-**[Rijan 魔改详解 (Chinese)](docs/rijan-fork-guide.md)**
+\*\*\[Rijan 魔改详解 \(Chinese\)\](https://1ces0ul.github.io/linux-guides/rijan-fork-guide.html)\*\*
 
 ---
 
