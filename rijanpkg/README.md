@@ -2,6 +2,8 @@
 
 > **What is Rijan?** Rijan is a tiling window manager written in Janet, designed to run on top of the River Wayland compositor. It offers a clean, scriptable, and runtime‑modifiable approach to window management. This guide covers both the basics and the advanced modifications made in this fork.
 
+> **🇨🇳 中文版：[Rijan 魔改详解](https://1ces0ul.github.io/linux-guides/rijan-fork-guide.html)**
+
 ## Table of Contents
 
 - [Introduction: What is Rijan?](#introduction-what-is-rijan)
@@ -282,12 +284,5 @@ The original Rijan used `single‑pixel‑buffer` to draw a solid background. Th
 - [Original Rijan](https://codeberg.org/ifreund/rijan)
 - [This fork](https://github.com/1ces0ul/config-river.0.4.0-dev)
 - [Janet language](https://janet-lang.org/)
-
-## Chinese Version
-
-For a detailed, Chinese‑language walkthrough of the modifications (including code snippets and design rationale), see the full tutorial:  
-\*\*\[Rijan 魔改详解 \(Chinese\)\](https://1ces0ul.github.io/linux-guides/rijan-fork-guide.html)\*\*
-
----
 
 *Happy tiling!*
