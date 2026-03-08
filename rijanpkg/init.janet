@@ -30,6 +30,7 @@
 (array/push
   (config :xkb-bindings)
   # --- Waybar Toggle (最优解：信号隐藏 || 失败救活)
+  [:m {:mod4 true} (action/spawn ["/home/icesoul/.config/river/scripts/mihomo_status.sh" "toggle_mode"])]
   [:b {:mod4 true :shift true} (action/spawn ["sh" "-c" (string "pkill -USR1 waybar || " waybar-cmd " &")])]
   [:XF86MonBrightnessUp {} (action/spawn ["brightnessctl" "set" "10%+"])]
   [:XF86MonBrightnessDown {} (action/spawn ["brightnessctl" "set" "10%-"])]
