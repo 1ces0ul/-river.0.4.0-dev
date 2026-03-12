@@ -145,5 +145,16 @@
   "pgrep -x dunst > /dev/null || dunst -config " (paths :dunst-conf) " & "
 )] :p)
 
+# ── 显示器电源管理 ──
+# 先终止旧的 swayidle 进程，再启动新实例
+# 300 秒无操作关闭所有显示器，恢复操作时重新打开
+(os/execute ["pkill" "-x" "swayidle"] :p)
+(ev/spawn
+  (os/proc-wait
+    (os/spawn ["swayidle" "-w"
+               "timeout" "300" "wlopm --off \"*\""
+               "resume" "wlopm --on \"*\""]
+              :p)))
+
 # [初始化完成通知]
 (notify "所有服务已就绪" "Rijan 启动完成")
