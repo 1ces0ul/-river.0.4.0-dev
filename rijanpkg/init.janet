@@ -24,6 +24,10 @@
 # [Waybar 启动指令定义]
 (def waybar-cmd (string "waybar -c '" (paths :waybar-conf) "' -s '" (paths :waybar-css) "'"))
 
+# [光标主题]
+(put config :xcursor-theme "broodwar")
+(put config :xcursor-size 24)
+
 # ============================================================
 # 3. 按键绑定 (声明式逻辑)
 # ============================================================
@@ -145,16 +149,22 @@
   "pgrep -x dunst > /dev/null || dunst -config " (paths :dunst-conf) " & "
 )] :p)
 
+# ── GNOME/GTK 主题设置 ──
+(os/spawn ["sh" "-c" (string
+  "gsettings set org.gnome.desktop.interface gtk-theme Orchis-dark; "
+  "gsettings set org.gnome.desktop.interface icon-theme tela-circle-dark; "
+  "gsettings set org.gnome.desktop.interface cursor-theme broodwar; "
+  "gsettings set org.gnome.desktop.interface cursor-size 24; "
+  "gsettings set org.gnome.desktop.interface color-scheme prefer-dark; "
+  "gsettings set org.gnome.desktop.wm.preferences button-layout ''"
+)] :p)
+
 # ── 显示器电源管理 ──
 # 先终止旧的 swayidle 进程，再启动新实例
 # 300 秒无操作关闭所有显示器，恢复操作时重新打开
-(os/execute ["pkill" "-x" "swayidle"] :p)
-(ev/spawn
-  (os/proc-wait
-    (os/spawn ["swayidle" "-w"
-               "timeout" "300" "wlopm --off \"*\""
-               "resume" "wlopm --on \"*\""]
-              :p)))
+(os/spawn ["sh" "-c"
+  "pkill -x swayidle; swayidle -w timeout 300 'wlopm --off \"*\"' resume 'wlopm --on \"*\"'"
+] :p)
 
 # [初始化完成通知]
 (notify "所有服务已就绪" "Rijan 启动完成")
