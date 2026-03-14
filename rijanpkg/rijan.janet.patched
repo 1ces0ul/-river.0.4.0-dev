@@ -588,7 +588,8 @@
   (:set-handler obj seat/handle-event)
   (:set-handler (seat :layer-shell) seat/handle-layer-shell-event)
   (:set-user-data obj seat)
-  (:set-xcursor-theme obj "Adwaita" 24)
+  (when (and (config :xcursor-theme) (config :xcursor-size))
+    (:set-xcursor-theme obj (config :xcursor-theme) (config :xcursor-size)))
   seat)
 
 (defn wm/show-hide []
