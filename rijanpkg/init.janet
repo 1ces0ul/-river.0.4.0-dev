@@ -62,6 +62,7 @@
   [:r {:mod4 true :shift true} (action/retile)]
   [:a {:mod4 true} (action/spawn ["sh" "-c" "grim -g \"$(slurp)\" - | wl-copy"])]
   [:Escape {:mod4 true :mod1 true :shift true :ctrl true} (action/passthrough)]
+  [:BackSpace {:mod4 true :mod1 true :shift true :ctrl true} (action/exit-session)]
   [:0 {:mod4 true} (action/focus-all-tags)]
 
   # ---- 新增功能 ----
