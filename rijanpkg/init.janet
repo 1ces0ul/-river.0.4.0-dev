@@ -142,8 +142,8 @@
   
   # 3. 第三步：启动依赖环境的程序（串行链条，确保变量已生效）
   # 使用 && 确保前一步成功才执行下一步
-  "systemctl --user restart swww.service && "
-  "swww img " (paths :wallpaper) " & "
+  "systemctl --user restart awww.service && "
+  "awww img " (paths :wallpaper) " & "
   
   # 4. 状态栏和通知
   "pgrep -x waybar > /dev/null || " waybar-cmd " & "
