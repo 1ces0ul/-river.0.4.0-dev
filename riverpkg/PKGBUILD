@@ -49,10 +49,19 @@ prepare() {
     zig fetch --global-cache-dir ./zig-global-cache "./${source[2]%%::*}"
     zig fetch --global-cache-dir ./zig-global-cache "./${source[3]%%::*}"
     zig fetch --global-cache-dir ./zig-global-cache "./${source[4]%%::*}"
+    # 在 src 目录下创建缓存，不进 river 目录，结构更清晰
+    # 彻底解决 AccessDenied 的核心：创建属于当前用户的临时缓存目录
+    mkdir -p "$srcdir/zig-cache"
+    mkdir -p "$srcdir/zig-local-cache"
 }
 
 build() {
   cd $pkgname
+  # 解决 Zig 0.15 依赖问题的核心：设置本地缓存目录
+  # 强制重定向所有缓存到构建目录，不碰系统的 ~/.cache/zig
+  export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
+  export ZIG_LOCAL_CACHE_DIR="$srcdir/zig-local-cache"
+  
   DESTDIR="build" zig build \
     --summary all \
     --prefix /usr \
