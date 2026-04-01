@@ -1,22 +1,43 @@
-pkgname=river-git
-# 这里的版本号是占位符，执行时会被 pkgver() 函数自动更新
-pkgver=0.4.0.dev
+pkgname=river
+pkgver=0.4.2
 pkgrel=1
-pkgdesc="A dynamic tiling Wayland compositor (Development version 0.4.0)"
-arch=('x86_64' 'aarch64')
-url="https://codeberg.org/river/river"
-license=('GPL-3.0-only')
+pkgdesc='a non-monolithic Wayland compositor'
+arch=('x86_64')
+url="https://isaacfreund.com/software/river/"
+license=('0BSD' 'CC-BY-SA-4.0' 'GPL-3.0-only' 'MIT')
+depends=(
+    'glibc'
+    'libevdev'
+    'libinput'
+    'libxkbcommon'
+    'pixman'
+    'wayland'
+    'wlroots0.20'
+    'xorg-xwayland'
+)
+makedepends=(
+    'git'
+    'scdoc'
+    'wayland-protocols'
+    'zig'
+)
+# optdepends=('polkit: access seat through systemd-logind')
+# provides=('river-window-management-v1')
 
-# 依赖项（根据你提供的 build.zig 和 Zig 0.15 确定）
-depends=('wlroots0.19' 'wayland' 'libxkbcommon' 'pixman' 'libevdev' 'libinput')
-makedepends=('zig>=0.15.0' 'wayland-protocols' 'scdoc' 'pkgconf' 'git')
-provides=('river')
-conflicts=('river')
-
-# 指向官方 Git 仓库（如果你想用本地的，可以改成 git+file:///path/to/your/river）
-source=("river::git+https://codeberg.org/river/river.git")
-sha256sums=('SKIP') # Git 仓库必须 SKIP 校验
-
+source=(git+https://codeberg.org/river/river.git#tag=v${pkgver}?signed)
+# PACKAGING.md -> build.zig.zon
+source+=(zig-pixman-0.3.0.tar.gz::https://codeberg.org/ifreund/zig-pixman/archive/v0.3.0.tar.gz
+         zig-wayland-0.5.0.tar.gz::https://codeberg.org/ifreund/zig-wayland/archive/v0.5.0.tar.gz
+         zig-wlroots-0.20.0.tar.gz::https://codeberg.org/ifreund/zig-wlroots/archive/v0.20.0.tar.gz
+         zig-xkbcommon-0.4.0.tar.gz::https://codeberg.org/ifreund/zig-xkbcommon/archive/v0.4.0.tar.gz)
+noextract=("${source[@]:1}")
+conflicts=('river-classic')
+validpgpkeys=('5FBDF84DD2278DB2B8AD8A5286DED400DDFD7A11') # Isaac Freund <mail@isaacfreund.com>
+sha256sums=('def9524ece826e17760264a6196836997e2624f70dd2daafc9f5a30ba8e713e8'
+            'cd7fe3415d4d58685a94fdedd308e9994a37f012828940cfb603461de7f2c6ad'
+            'fa9705e83613b5555d7117ce5c602f10591d6598e69a73fba2e6039200db4f4b'
+            '75af3510386c639582693d01788579abde4dca9ce1ae6703c1e877ec8123d106'
+            'e6df77d511cf9402f6ac08455c8d1fb727b6c3d66191e246671f62e5db083c49')
 pkgver() {
   cd "$srcdir/river"
   # 自动生成类似 0.4.0.dev.r150.g7a2b3c4 的版本号
@@ -24,46 +45,52 @@ pkgver() {
 }
 
 prepare() {
-  # 在 src 目录下创建缓存，不进 river 目录，结构更清晰
-  # 彻底解决 AccessDenied 的核心：创建属于当前用户的临时缓存目录
-  mkdir -p "$srcdir/zig-cache"
-  mkdir -p "$srcdir/zig-local-cache"
+    zig fetch --global-cache-dir ./zig-global-cache "./${source[1]%%::*}"
+    zig fetch --global-cache-dir ./zig-global-cache "./${source[2]%%::*}"
+    zig fetch --global-cache-dir ./zig-global-cache "./${source[3]%%::*}"
+    zig fetch --global-cache-dir ./zig-global-cache "./${source[4]%%::*}"
 }
 
 build() {
-  # 显式进入源码目录
-  cd "$srcdir/river"
-
-  # 解决 Zig 0.15 依赖问题的核心：设置本地缓存目录
-  # 强制重定向所有缓存到构建目录，不碰系统的 ~/.cache/zig
-  export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
-  export ZIG_LOCAL_CACHE_DIR="$srcdir/zig-local-cache"
-
-  zig build \
-    -Doptimize=ReleaseSafe \
+  cd $pkgname
+  DESTDIR="build" zig build \
+    --summary all \
+    --prefix /usr \
+    --search-prefix /usr \
+    --global-cache-dir ../zig-global-cache \
+    --system ../zig-global-cache/p \
+    --build-id=sha1 \
+    -Dtarget=native-linux.6.6-gnu.2.40 \
     -Dcpu=baseline \
-    -Dpie=true \
-    -Dxwayland=true
+    -Dpie \
+    -Doptimize=ReleaseSafe \
+    -Dxwayland
+}
+
+check() {
+  cd $pkgname
+  zig build test \
+    --summary all \
+    --prefix /usr \
+    --search-prefix /usr \
+    --global-cache-dir ../zig-global-cache \
+    --system ../zig-global-cache/p \
+    --build-id=sha1 \
+    -Dtarget=native-linux.6.6-gnu.2.40 \
+    -Dcpu=baseline \
+    -Dpie \
+    -Doptimize=ReleaseSafe \
+    -Dxwayland
 }
 
 package() {
-  # 显式进入源码目录
-  cd "$srcdir/river"
+  cd $pkgname
 
-  export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
-  export ZIG_LOCAL_CACHE_DIR="$srcdir/zig-local-cache"
+  cp -a build/* "$pkgdir"
 
-  # 安装到 $pkgdir
-  DESTDIR="$pkgdir" zig build \
-    -Doptimize=ReleaseSafe \
-    -Dcpu=baseline \
-    -Dpie=true \
-    -Dxwayland=true \
-    --prefix /usr \
-    install
+  install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname"
+  install -Dm644 contrib/river.desktop -t "$pkgdir/usr/share/wayland-sessions"
 
-  # 修正：从 LICENSES 目录安装 GPL-3.0 许可证
-  # 根据 river 仓库结构，通常是 LICENSES/GPL-3.0-only.txt 或类似名称
-  # 我们直接匹配 LICENSES 目录下的文件
-  install -Dm644 LICENSES/* -t "${pkgdir}/usr/share/licenses/${pkgname}/"
+  # add license + exception
+  install -m644 -Dt "${pkgdir}/usr/share/licenses/${pkgname}" LICENSES/{0BSD.txt,MIT.txt}
 }
