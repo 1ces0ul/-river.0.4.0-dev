@@ -94,7 +94,10 @@ check() {
 
 package() {
   cd $pkgname
-
+  
+  export ZIG_GLOBAL_CACHE_DIR="$srcdir/zig-cache"
+  export ZIG_LOCAL_CACHE_DIR="$srcdir/zig-local-cache"
+  
   cp -a build/* "$pkgdir"
 
   install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname"
